@@ -51,6 +51,7 @@ from backend.utils.auth_deps import (
     get_client_ip,
     get_current_user_optional,
     get_user_agent,
+    is_trusted_proxy,
     require_admin_user,
     require_authenticated_user,
 )
@@ -253,14 +254,16 @@ async def add_security_headers(request: Request, call_next):
         "frame-ancestors 'none'"
     )
 
-    # Enforce HSTS if running over HTTPS or in production behind reverse proxy (2 years as per OWASP ASVS)
+    # Enforce HSTS if running over HTTPS or behind trusted reverse proxy terminating TLS (2 years as per OWASP ASVS)
+    direct_peer = request.client.host if request.client else None
+    trust_forwarded = is_trusted_proxy(direct_peer)
     is_https = (
         request.url.scheme == "https"
-        or request.headers.get("x-forwarded-proto") == "https"
+        or (trust_forwarded and request.headers.get("x-forwarded-proto") == "https")
         or _IS_PROD
     )
     if is_https:
-        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
 
     return response
 
@@ -311,7 +314,7 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="degraded",
         model_loaded=False,
-        detail=model_store.load_error or "Model not yet loaded.",
+        detail="Model service unavailable." if _IS_PROD else (model_store.load_error or "Model not yet loaded."),
     )
 
 
@@ -416,7 +419,7 @@ def prometheus_metrics(request: Request):
     direct_peer = request.client.host if request.client else None
     user = get_current_user_optional(request)
     is_admin = bool(user and user.get("role") == "admin")
-    is_internal = direct_peer in _INTERNAL_METRICS_HOSTS
+    is_internal = is_trusted_proxy(direct_peer)
 
     if not (is_internal or is_admin):
         logger.warning("Unauthorized attempt to access /metrics from peer %s", direct_peer)

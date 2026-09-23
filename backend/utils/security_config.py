@@ -76,6 +76,21 @@ def validate_production_secrets() -> None:
     if debug in ("true", "1", "yes", "on"):
         errors.append("DEBUG mode must not be enabled when ENVIRONMENT=production.")
 
+    # 5. Insecure cookie settings check
+    cookie_secure = os.getenv("COOKIE_SECURE", "true").strip().lower()
+    if cookie_secure in ("false", "0", "no", "off"):
+        errors.append("COOKIE_SECURE must not be disabled when ENVIRONMENT=production.")
+
+    # 6. Wildcard credentialed CORS check
+    raw_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if "*" in [o.strip() for o in raw_origins.split(",")]:
+        errors.append("Wildcard '*' in ALLOWED_ORIGINS is strictly prohibited in production.")
+
+    # 7. POSTGRES_PASSWORD check (if set directly in environment)
+    postgres_password = os.getenv("POSTGRES_PASSWORD", "").strip()
+    if postgres_password and is_obviously_weak(postgres_password):
+        errors.append("POSTGRES_PASSWORD contains an insecure default or placeholder value.")
+
     if errors:
         error_msg = (
             "FATAL PRODUCTION SECURITY ERROR: Application refused to start due to "

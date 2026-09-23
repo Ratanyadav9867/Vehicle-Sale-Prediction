@@ -143,12 +143,17 @@ def record_failed_auth(ip: str, email: str) -> None:
             _failed_auth_attempts[k].append(now)
 
 
-def clear_failed_auth(ip: str, email: Optional[str] = None) -> None:
+def clear_failed_auth(ip: Optional[str] = None, email: Optional[str] = None) -> None:
     """Clear failed attempts upon successful authentication or test reset."""
-    keys = [f"fail_ip:{ip}"]
-    if email:
-        keys.append(f"fail_email:{email.strip().lower()}")
     with _auth_lock:
+        if ip is None and email is None:
+            _failed_auth_attempts.clear()
+            return
+        keys = []
+        if ip:
+            keys.append(f"fail_ip:{ip}")
+        if email:
+            keys.append(f"fail_email:{email.strip().lower()}")
         for k in keys:
             _failed_auth_attempts.pop(k, None)
 
@@ -336,6 +341,11 @@ def login_user(req: LoginRequest, request: Request, response: Response):
     # Clear lockout on successful authentication
     clear_failed_auth(ip, norm_email)
 
+    # Rotate session: invalidate prior session if present (session fixation mitigation)
+    prior_token = request.cookies.get("__Host-auth_token") or request.cookies.get("auth_token")
+    if prior_token:
+        revoke_session(prior_token)
+
     expires_days = 30 if req.remember_me else 7
     token = create_session(user_record["id"], expires_days=expires_days)
     clean_user = {k: v for k, v in user_record.items() if k not in ["password_hash", "salt"]}
@@ -454,6 +464,11 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
             status_code=status.HTTP_403_FORBIDDEN,
             content={"code": "ACCOUNT_DISABLED", "message": msg, "detail": msg},
         )
+
+    # Rotate session: invalidate prior session if present (session fixation mitigation)
+    prior_token = request.cookies.get("__Host-auth_token") or request.cookies.get("auth_token")
+    if prior_token:
+        revoke_session(prior_token)
 
     clear_failed_auth(ip, norm_email)
     token = create_session(user_record["id"], expires_days=7)
@@ -688,10 +703,13 @@ def change_password(
         metadata={"revoked_other_sessions": True},
     )
 
-    return {
+    resp_token = None if _ENV == "production" else new_token
+    resp_content = {
         "message": "Password changed successfully. You've been signed out of all other devices.",
-        "token": new_token,
     }
+    if resp_token:
+        resp_content["token"] = resp_token
+    return resp_content
 
 
 @router.post("/logout")

@@ -224,7 +224,7 @@ def test_sql_injection_resilience():
     """Classic SQL injection payloads must be safely rejected or parameterized without database errors."""
     from backend.utils.rate_limiter import clear_rate_limits
     clear_rate_limits()
-    clear_failed_auth("127.0.0.1")
+    clear_failed_auth()
 
     # 1. Syntactically invalid email format blocked by input validation (HTTP 422)
     sqli_raw = "' OR '1'='1"
@@ -391,4 +391,80 @@ def test_log_activity_sanitizes_connection_and_passwords():
     assert "secretpass123" not in scrubbed
     assert "SuperSecret" not in scrubbed
     assert "[REDACTED]" in scrubbed
+
+
+def test_trusted_proxy_cidr_and_spoof_prevention(monkeypatch):
+    """Only trusted proxies (including CIDR ranges) can supply forwarded client IPs."""
+    from backend.utils.auth_deps import is_trusted_proxy, get_client_ip
+    from starlette.requests import Request
+
+    # Localhost and testclient are always trusted by default
+    assert is_trusted_proxy("127.0.0.1") is True
+    assert is_trusted_proxy("::1") is True
+    assert is_trusted_proxy("testclient") is True
+
+    # Untrusted external IP
+    assert is_trusted_proxy("198.51.100.25") is False
+
+    # Simulate request from untrusted external client sending spoofed X-Forwarded-For
+    scope = {
+        "type": "http",
+        "client": ("198.51.100.25", 54321),
+        "headers": [(b"x-forwarded-for", b"203.0.113.195")],
+    }
+    req = Request(scope)
+    # The client IP must be the direct peer, ignoring the spoofed header
+    assert get_client_ip(req) == "198.51.100.25"
+
+
+def test_session_rotation_on_login():
+    """Logging in with an existing active session cookie must invalidate the prior session."""
+    from backend.db.database import get_user_from_token
+
+    clear_failed_auth()
+    # 1. First login to obtain an active session
+    res1 = client.post("/api/auth/login", json={"email": "sec_user@test.com", "password": "UserPass#123"})
+    assert res1.status_code == 200
+    token1 = res1.cookies.get("auth_token") or res1.cookies.get("__Host-auth_token") or res1.json().get("token")
+    assert token1 is not None
+    assert get_user_from_token(token1) is not None
+
+    # 2. Second login using the same cookie session
+    res2 = client.post(
+        "/api/auth/login",
+        json={"email": "sec_user@test.com", "password": "UserPass#123"},
+        cookies={"auth_token": token1},
+    )
+    assert res2.status_code == 200
+    token2 = res2.cookies.get("auth_token") or res2.cookies.get("__Host-auth_token") or res2.json().get("token")
+    assert token2 is not None
+    assert token2 != token1
+
+    # 3. Prior session token1 must now be revoked in database
+    assert get_user_from_token(token1) is None
+    # 4. New session token2 must be active
+    assert get_user_from_token(token2) is not None
+
+
+def test_production_config_rejects_insecure_cookies_and_wildcard_cors(monkeypatch):
+    """Production validation must abort on insecure cookies or wildcard CORS."""
+    from backend.utils.security_config import validate_production_secrets
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("JWT_SECRET", "super-secret-random-production-token-at-least-32-chars-long")
+    monkeypatch.setenv("ADMIN_PASSWORD", "ComplexProdPassword987!#")
+
+    # Insecure cookie rejection
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    with pytest.raises(RuntimeError) as exc_info:
+        validate_production_secrets()
+    assert "COOKIE_SECURE" in str(exc_info.value)
+
+    # Wildcard CORS rejection
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    monkeypatch.setenv("ALLOWED_ORIGINS", "*,https://app.example.com")
+    with pytest.raises(RuntimeError) as exc_info2:
+        validate_production_secrets()
+    assert "Wildcard '*'" in str(exc_info2.value)
+
 

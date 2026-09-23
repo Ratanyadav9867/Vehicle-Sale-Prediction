@@ -15,6 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import secrets
 from typing import Any
 
 import joblib
@@ -69,7 +70,7 @@ class ModelStore:
                 model_bytes = _MODEL_PATH.read_bytes()
                 computed_sha = hashlib.sha256(model_bytes).hexdigest()
 
-                if computed_sha.lower() != expected_sha.lower():
+                if not secrets.compare_digest(computed_sha.lower(), expected_sha.lower()):
                     err_msg = (
                         f"CRITICAL SECURITY ALERT: Model checksum mismatch! "
                         f"Expected {expected_sha}, computed {computed_sha}. Deserialization blocked."
