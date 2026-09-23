@@ -224,6 +224,7 @@ def test_sql_injection_resilience():
     """Classic SQL injection payloads must be safely rejected or parameterized without database errors."""
     from backend.utils.rate_limiter import clear_rate_limits
     clear_rate_limits()
+    clear_failed_auth("127.0.0.1")
 
     # 1. Syntactically invalid email format blocked by input validation (HTTP 422)
     sqli_raw = "' OR '1'='1"
@@ -347,3 +348,47 @@ def test_ml_model_checksum_verification():
     )
     assert tampered_store.is_ready is False
     assert "checksum mismatch" in tampered_store.load_error.lower()
+
+
+# ── 10. Advanced ASVS 5.0 Security Headers & Startup Controls ─────────────────
+
+def test_security_headers_coop_corp():
+    """Responses must include Cross-Origin-Opener-Policy and Cross-Origin-Resource-Policy."""
+    res = client.get("/api/health")
+    assert res.headers.get("Cross-Origin-Opener-Policy") == "same-origin"
+    assert res.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+
+
+def test_startup_secret_validation_rejects_weak(monkeypatch):
+    """Production startup must abort if required secrets are weak or missing."""
+    from backend.utils.security_config import validate_production_secrets
+
+    # Valid in development
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    validate_production_secrets()  # should not raise
+
+    # Refuse startup in production with missing or weak JWT_SECRET
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("JWT_SECRET", "changeme123")
+    with pytest.raises(RuntimeError) as exc_info:
+        validate_production_secrets()
+    assert "insecure configuration" in str(exc_info.value).lower()
+
+    # Refuse startup with weak admin password
+    monkeypatch.setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin")
+    with pytest.raises(RuntimeError) as exc_info:
+        validate_production_secrets()
+    assert "ADMIN_PASSWORD" in str(exc_info.value)
+
+
+def test_log_activity_sanitizes_connection_and_passwords():
+    """Activity logging must sanitize sensitive passwords and connection strings."""
+    from backend.db.database import sanitize_log_text
+
+    raw = "Failed connection to postgresql://caruser:secretpass123@localhost:5432/cardb with password=SuperSecret"
+    scrubbed = sanitize_log_text(raw)
+    assert "secretpass123" not in scrubbed
+    assert "SuperSecret" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+

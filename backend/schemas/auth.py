@@ -104,7 +104,7 @@ class UserResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    token: str
+    token: Optional[str] = None
     user: UserResponse
     message: str = "Authentication successful"
 

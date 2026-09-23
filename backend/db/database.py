@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -231,17 +232,30 @@ def init_db() -> None:
 
 # ── Activity Logging Engine ───────────────────────────────────────────────────
 
+def sanitize_log_text(text: str) -> str:
+    """Scrub sensitive credentials, passwords, tokens, and database URLs from log text."""
+    if not text:
+        return text
+    # Scrub database connection URLs with embedded credentials
+    scrubbed = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", text)
+    # Scrub key-value pairs like password=xyz or secret=xyz
+    scrubbed = re.sub(r"(?i)\b(password|pwd|secret|token|api[_-]?key)\s*[:=]\s*([^\s,;\"'}{]+)", r"\1=[REDACTED]", scrubbed)
+    # Scrub bearer tokens
+    scrubbed = re.sub(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]{15,}", "Bearer [REDACTED]", scrubbed)
+    return scrubbed
+
+
 def log_activity(
     action_type: str,
     category: str,
     description: str,
     status: str = "success",
     user_id: Optional[int] = None,
-    user_name: str = "Guest",
-    email: str = "anonymous",
-    role: str = "guest",
-    ip_address: str = "127.0.0.1",
-    user_agent: str = "Unknown",
+    user_name: Optional[str] = "Guest",
+    email: Optional[str] = "anonymous",
+    role: Optional[str] = "guest",
+    ip_address: Optional[str] = "127.0.0.1",
+    user_agent: Optional[str] = "Unknown",
     metadata: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
@@ -252,11 +266,19 @@ def log_activity(
     meta_copy = dict(metadata or {})
 
     # Never log credentials or tokens
-    for forbidden in ["password", "token", "confirm_password", "salt", "secret"]:
+    for forbidden in ["password", "token", "confirm_password", "salt", "secret", "current_password", "new_password"]:
         if forbidden in meta_copy:
             meta_copy[forbidden] = "[REDACTED]"
 
-    meta_str = json.dumps(meta_copy)
+    clean_desc = sanitize_log_text(description)
+    meta_str = sanitize_log_text(json.dumps(meta_copy))
+
+    # Guard against None violating NOT NULL column constraints
+    safe_user_name = user_name or "Guest"
+    safe_email = email or "anonymous"
+    safe_role = role or "guest"
+    safe_ip = ip_address or "127.0.0.1"
+    safe_ua = user_agent or "Unknown"
 
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -267,9 +289,9 @@ def log_activity(
                 ip_address, user_agent, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            timestamp, user_id, user_name, email, role,
-            action_type, category, description, status,
-            ip_address, user_agent, meta_str
+            timestamp, user_id, safe_user_name, safe_email, safe_role,
+            action_type, category, clean_desc, status,
+            safe_ip, safe_ua, meta_str
         ))
         conn.commit()
         return cursor.lastrowid or 0

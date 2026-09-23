@@ -55,13 +55,13 @@ services:
       - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
+      - DATABASE_URL=${DATABASE_URL}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
-      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -96,13 +96,13 @@ services:
       - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
+      - DATABASE_URL=${DATABASE_URL}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
-      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -137,13 +137,13 @@ services:
       - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
+      - DATABASE_URL=${DATABASE_URL}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
-      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
+      - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -206,13 +206,13 @@ services:
           cpus: "1.0"
           memory: 1G
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:-caruser}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}
-      - POSTGRES_DB=${POSTGRES_DB:-cardb}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caruser} -d ${POSTGRES_DB:-cardb}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 5

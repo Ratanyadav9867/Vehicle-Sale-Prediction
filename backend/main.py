@@ -82,6 +82,8 @@ METRICS_LOCK = threading.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=== Vehicle Sales Prediction API starting up ===")
+    from backend.utils.security_config import validate_production_secrets
+    validate_production_secrets()
     init_db()
     model_store.load()
     if model_store.is_ready:
@@ -182,7 +184,7 @@ async def csrf_protect_middleware(request: Request, call_next):
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         path = request.url.path
         if path not in CSRF_EXEMPT_PATHS:
-            cookie_token = request.cookies.get("auth_token")
+            cookie_token = request.cookies.get("__Host-auth_token") or request.cookies.get("auth_token")
             auth_header = request.headers.get("authorization", "")
 
             # If request is authenticated via browser session cookie (not explicit Bearer header):
@@ -242,20 +244,23 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Disable camera/mic/geo access from this API origin
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+    # Cross-Origin Isolation & Embedding Protections
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     # Content-Security-Policy: API only serves JSON; no scripts/styles needed
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; "
         "frame-ancestors 'none'"
     )
 
-    # Enforce HSTS if running over HTTPS or in production behind reverse proxy
+    # Enforce HSTS if running over HTTPS or in production behind reverse proxy (2 years as per OWASP ASVS)
     is_https = (
         request.url.scheme == "https"
         or request.headers.get("x-forwarded-proto") == "https"
         or _IS_PROD
     )
     if is_https:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
 
     return response
 

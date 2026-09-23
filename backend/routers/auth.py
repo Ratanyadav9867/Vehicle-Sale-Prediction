@@ -62,10 +62,13 @@ _COOKIE_MAX_AGE_REMEMBER = 30 * 24 * 3600  # 30 days
 import secrets
 
 
+_COOKIE_NAME = "__Host-auth_token" if _COOKIE_SECURE else "auth_token"
+
+
 def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_AGE_DEFAULT) -> None:
     """Attach the httpOnly session cookie and readable CSRF token cookie to a response."""
     response.set_cookie(
-        key="auth_token",
+        key=_COOKIE_NAME,
         value=token,
         httponly=True,            # Not accessible to JavaScript — XSS-safe
         samesite="lax",           # Allows normal navigation; blocks foreign CSRF
@@ -88,6 +91,7 @@ def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_
 def _clear_auth_cookie(response: Response) -> None:
     """Clear the session and CSRF cookies (expire immediately)."""
     response.delete_cookie(key="auth_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
+    response.delete_cookie(key="__Host-auth_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
     response.delete_cookie(key="csrf_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
 
 # ── Configuration: Specific Auth Errors vs Generic Message ─────────────────────
@@ -139,9 +143,11 @@ def record_failed_auth(ip: str, email: str) -> None:
             _failed_auth_attempts[k].append(now)
 
 
-def clear_failed_auth(ip: str, email: str) -> None:
-    """Clear failed attempts upon successful authentication."""
-    keys = [f"fail_ip:{ip}", f"fail_email:{email.strip().lower()}"]
+def clear_failed_auth(ip: str, email: Optional[str] = None) -> None:
+    """Clear failed attempts upon successful authentication or test reset."""
+    keys = [f"fail_ip:{ip}"]
+    if email:
+        keys.append(f"fail_email:{email.strip().lower()}")
     with _auth_lock:
         for k in keys:
             _failed_auth_attempts.pop(k, None)
@@ -233,8 +239,10 @@ def register_user(req: RegisterRequest, request: Request, response: Response):
     )
 
     _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT)
+    # In production, do not return session token in JSON response body (XSS mitigation)
+    resp_token = None if _ENV == "production" else token
     return AuthResponse(
-        token=token,
+        token=resp_token,
         user=UserResponse(**user),
         message="Account created. Welcome to Car Worth.",
     )
@@ -348,8 +356,10 @@ def login_user(req: LoginRequest, request: Request, response: Response):
 
     max_age = _COOKIE_MAX_AGE_REMEMBER if req.remember_me else _COOKIE_MAX_AGE_DEFAULT
     _set_auth_cookie(response, token, max_age=max_age)
+    # In production, do not return session token in JSON response body (XSS mitigation)
+    resp_token = None if _ENV == "production" else token
     return AuthResponse(
-        token=token,
+        token=resp_token,
         user=UserResponse(**clean_user),
         message="Sign in successful",
     )
@@ -464,8 +474,10 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     )
 
     _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT)
+    # In production, do not return session token in JSON response body (XSS mitigation)
+    resp_token = None if _ENV == "production" else token
     return AuthResponse(
-        token=token,
+        token=resp_token,
         user=UserResponse(**clean_user),
         message="Administrator sign in successful",
     )
@@ -694,7 +706,7 @@ def logout_user(
     ua = get_user_agent(request)
 
     # Revoke session from DB — try cookie token first, then Bearer header
-    token = request.cookies.get("auth_token")
+    token = request.cookies.get("__Host-auth_token") or request.cookies.get("auth_token")
     if not token and authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ", 1)[1].strip()
     if token:

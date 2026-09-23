@@ -85,3 +85,17 @@ jobs:
           file: ./Dockerfile
           push: false
           tags: car-worth-backend:ci-test
+
+  secret-scan:
+    name: Automated Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks Secret Scanner
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

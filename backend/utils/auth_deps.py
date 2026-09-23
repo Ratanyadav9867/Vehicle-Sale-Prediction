@@ -56,8 +56,8 @@ def get_current_user_optional(
     secondary fallback so direct API consumers (curl, scripts, k6 load tests)
     continue to work without modification.
     """
-    # 1. httpOnly cookie (preferred — XSS-safe)
-    token = request.cookies.get("auth_token")
+    # 1. httpOnly cookie (preferred — XSS-safe, supporting __Host- prefix in production)
+    token = request.cookies.get("__Host-auth_token") or request.cookies.get("auth_token")
 
     # 2. Bearer header fallback (for non-browser API clients)
     auth_header = authorization if isinstance(authorization, str) else request.headers.get("authorization")
