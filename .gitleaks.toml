@@ -1,0 +1,11 @@
+# Gitleaks configuration
+# Ignores historic commits before placeholder sanitation
+
+title = "Car Worth Gitleaks Configuration"
+
+[allowlist]
+description = "Historical commits prior to environment placeholder sanitation"
+commits = [
+  "e9cfcaab1218bb03a707034959145f62a03b7362",
+  "48e2f65049c811ae431b9970c6630f6a27e7ca4a"
+]
