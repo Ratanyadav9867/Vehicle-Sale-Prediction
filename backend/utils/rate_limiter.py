@@ -87,3 +87,10 @@ def enforce_rate_limit(request: Request, key_prefix: str, max_requests: int, win
             detail=f"Rate limit exceeded. Please retry after {retry_after} seconds.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+def clear_rate_limits() -> None:
+    """Reset in-memory rate limiting windows (useful for test resets and administrative clearing)."""
+    with _memory_limiter._lock:
+        _memory_limiter._windows.clear()
+

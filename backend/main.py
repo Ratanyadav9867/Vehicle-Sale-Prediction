@@ -17,6 +17,7 @@ _load_dotenv()
 
 import asyncio
 import logging
+import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -141,6 +142,66 @@ async def metrics_middleware(request: Request, call_next):
         with METRICS_LOCK:
             ACTIVE_REQUESTS = max(0, ACTIVE_REQUESTS - 1)
 
+# ── Request Body Size Limit Middleware ───────────────────────────────────────
+# SECURITY FIX: Reject oversized request entities early to prevent memory exhaustion DoS
+MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB maximum request body size
+
+@app.middleware("http")
+async def limit_body_size_middleware(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_BYTES:
+                return JSONResponse(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={"detail": "Request entity too large. Maximum allowed size is 10 MB."},
+                )
+        except ValueError:
+            pass
+    return await call_next(request)
+
+
+# ── Double-Submit Cookie CSRF Middleware ─────────────────────────────────────
+# SECURITY FIX: For state-changing requests using cookie authentication, enforce
+# that the X-CSRF-Token header matches the csrf_token cookie.
+CSRF_EXEMPT_PATHS = {
+    "/api/auth/login",
+    "/api/auth/admin-login",
+    "/api/auth/register",
+    "/api/auth/csrf",
+    "/api/support/tickets",
+    "/api/logs/batch",
+    "/api/logs/event",
+    "/healthz",
+    "/readyz",
+    "/metrics",
+}
+
+@app.middleware("http")
+async def csrf_protect_middleware(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        path = request.url.path
+        if path not in CSRF_EXEMPT_PATHS:
+            cookie_token = request.cookies.get("auth_token")
+            auth_header = request.headers.get("authorization", "")
+
+            # If request is authenticated via browser session cookie (not explicit Bearer header):
+            if cookie_token and not (auth_header and auth_header.startswith("Bearer ")):
+                from backend.db.database import get_user_from_token
+                user = get_user_from_token(cookie_token)
+                if user:
+                    expected_csrf = request.cookies.get("csrf_token")
+                    received_csrf = request.headers.get("x-csrf-token") or request.headers.get("x-xsrf-token")
+
+                    if not expected_csrf or not received_csrf or not secrets.compare_digest(expected_csrf, received_csrf):
+                        return JSONResponse(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            content={"detail": "CSRF validation failed. Missing or invalid CSRF token header."},
+                        )
+
+    return await call_next(request)
+
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # SECURITY FIX: Wildcard "*" with allow_credentials=True is rejected by browsers
 # and opens CORS-credential abuse. Read allowed origins from ALLOWED_ORIGINS env
@@ -164,13 +225,12 @@ app.add_middleware(
     allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With", "X-CSRF-Token", "X-XSRF-Token"],
 )
 
 # ── Security Headers Middleware ───────────────────────────────────────────────
 # SECURITY FIX: Inject standard defense-in-depth HTTP security headers on every
-# response. CSP restricts script/style/connect sources to same-origin + our dev
-# origins so XSS injection has nowhere to load from.
+# response. CSP restricts script/style/connect sources so XSS has nowhere to load from.
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -181,12 +241,22 @@ async def add_security_headers(request: Request, call_next):
     # Only send origin on cross-origin requests (no full URL in Referer)
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # Disable camera/mic/geo access from this API origin
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     # Content-Security-Policy: API only serves JSON; no scripts/styles needed
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; "
         "frame-ancestors 'none'"
     )
+
+    # Enforce HSTS if running over HTTPS or in production behind reverse proxy
+    is_https = (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto") == "https"
+        or _IS_PROD
+    )
+    if is_https:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+
     return response
 
 

@@ -63,6 +63,7 @@ def setup_change_pw_users():
 
 def test_change_password_unauthenticated():
     """Unauthenticated request to change-password must return 401."""
+    client.cookies.clear()
     res = client.put("/api/auth/change-password", json={
         "current_password": "SomePass#123",
         "new_password": "NewPass#12345",

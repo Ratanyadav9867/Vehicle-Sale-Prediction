@@ -59,27 +59,41 @@ _COOKIE_MAX_AGE_DEFAULT = 7 * 24 * 3600   # 7 days in seconds
 _COOKIE_MAX_AGE_REMEMBER = 30 * 24 * 3600  # 30 days
 
 
+import secrets
+
+
 def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_AGE_DEFAULT) -> None:
-    """Attach the httpOnly session cookie to a response."""
+    """Attach the httpOnly session cookie and readable CSRF token cookie to a response."""
     response.set_cookie(
         key="auth_token",
         value=token,
         httponly=True,            # Not accessible to JavaScript — XSS-safe
-        samesite="lax",           # Allows normal navigation; blocks CSRF from foreign origins
+        samesite="lax",           # Allows normal navigation; blocks foreign CSRF
         secure=_COOKIE_SECURE,    # Strictly True in production (HTTPS), False in dev (HTTP)
+        max_age=max_age,
+        path="/",
+    )
+    csrf_token = secrets.token_urlsafe(24)
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,           # Readable by frontend Axios for Double-Submit CSRF protection
+        samesite="lax",
+        secure=_COOKIE_SECURE,
         max_age=max_age,
         path="/",
     )
 
 
 def _clear_auth_cookie(response: Response) -> None:
-    """Clear the session cookie (expire immediately)."""
+    """Clear the session and CSRF cookies (expire immediately)."""
     response.delete_cookie(key="auth_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
+    response.delete_cookie(key="csrf_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
 
 # ── Configuration: Specific Auth Errors vs Generic Message ─────────────────────
 # When True: distinct INVALID_EMAIL vs INVALID_PASSWORD errors.
-# When False: unified generic "Invalid email or password" message.
-SPECIFIC_AUTH_ERRORS = True
+# When False: unified generic "Invalid email or password" message (prevents account enumeration).
+SPECIFIC_AUTH_ERRORS = os.getenv("SPECIFIC_AUTH_ERRORS", "true").strip().lower() == "true"
 
 # ── Brute-Force Lockout Protection: 5 failed attempts within 15 minutes ─────────
 _failed_auth_attempts: Dict[str, List[float]] = collections.defaultdict(list)
@@ -457,9 +471,40 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
     )
 
 
+@router.get("/csrf")
+def get_csrf_token(request: Request, response: Response):
+    """Return and set a fresh double-submit CSRF token."""
+    token = request.cookies.get("csrf_token") or secrets.token_urlsafe(24)
+    response.set_cookie(
+        key="csrf_token",
+        value=token,
+        httponly=False,
+        samesite="lax",
+        secure=_COOKIE_SECURE,
+        max_age=_COOKIE_MAX_AGE_DEFAULT,
+        path="/",
+    )
+    return {"csrf_token": token}
+
+
 @router.get("/me", response_model=UserResponse)
-def get_current_user_profile(user: Dict[str, Any] = Depends(require_authenticated_user)):
-    """Fetch profile of the currently logged-in user."""
+def get_current_user_profile(
+    request: Request,
+    response: Response,
+    user: Dict[str, Any] = Depends(require_authenticated_user),
+):
+    """Fetch profile of the currently logged-in user and ensure valid CSRF token."""
+    if not request.cookies.get("csrf_token"):
+        token = secrets.token_urlsafe(24)
+        response.set_cookie(
+            key="csrf_token",
+            value=token,
+            httponly=False,
+            samesite="lax",
+            secure=_COOKIE_SECURE,
+            max_age=_COOKIE_MAX_AGE_DEFAULT,
+            path="/",
+        )
     return UserResponse(**user)
 
 

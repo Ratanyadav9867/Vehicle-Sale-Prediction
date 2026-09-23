@@ -252,7 +252,15 @@ def get_ticket_attachment(
     if not att_path:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This ticket has no attachment.")
 
-    file_path = ATTACHMENTS_DIR / att_path
+    # SECURITY FIX: Path traversal defense -- ensure resolved path is confined to ATTACHMENTS_DIR
+    try:
+        resolved_base = ATTACHMENTS_DIR.resolve()
+        file_path = (ATTACHMENTS_DIR / att_path).resolve()
+        if not file_path.is_relative_to(resolved_base):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Invalid attachment path.")
+    except (ValueError, RuntimeError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied. Invalid attachment path.")
+
     if not file_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment file missing on server.")
 

@@ -22,6 +22,8 @@ export const http = axios.create({
   // httpOnly auth_token cookie on every request automatically. The token
   // never has to touch JavaScript or localStorage.
   withCredentials: true,
+  xsrfCookieName: 'csrf_token',
+  xsrfHeaderName: 'X-CSRF-Token',
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',

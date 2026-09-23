@@ -11,6 +11,20 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./frontend/dist:/usr/share/nginx/html:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     depends_on:
       backend_1:
         condition: service_healthy
@@ -28,13 +42,26 @@ services:
       dockerfile: Dockerfile
     container_name: car_worth_backend_1
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     environment:
+      - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://caruser:carpass@postgres:5432/cardb
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
+      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
     depends_on:
       redis:
         condition: service_healthy
@@ -56,13 +83,26 @@ services:
       dockerfile: Dockerfile
     container_name: car_worth_backend_2
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     environment:
+      - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://caruser:carpass@postgres:5432/cardb
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
+      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
     depends_on:
       redis:
         condition: service_healthy
@@ -84,13 +124,26 @@ services:
       dockerfile: Dockerfile
     container_name: car_worth_backend_3
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     environment:
+      - ENVIRONMENT=production
       - PORT=8000
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://caruser:carpass@postgres:5432/cardb
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-caruser}:${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}@postgres:5432/${POSTGRES_DB:-cardb}
       - DB_POOL_SIZE=20
       - DB_MAX_OVERFLOW=10
       - CACHE_TTL_SECONDS=86400
+      - JWT_SECRET=${JWT_SECRET:-<SET_IN_SECRET_MANAGER>}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-<SET_IN_SECRET_MANAGER>}
     depends_on:
       redis:
         condition: service_healthy
@@ -110,6 +163,18 @@ services:
     image: redis:7-alpine
     container_name: car_worth_redis
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save ""
     volumes:
       - redis_data:/data
@@ -126,14 +191,28 @@ services:
     image: postgres:15-alpine
     container_name: car_worth_postgres
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
     environment:
-      - POSTGRES_USER=caruser
-      - POSTGRES_PASSWORD=carpass
-      - POSTGRES_DB=cardb
+      - POSTGRES_USER=${POSTGRES_USER:-caruser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-<SET_IN_SECRET_MANAGER>}
+      - POSTGRES_DB=${POSTGRES_DB:-cardb}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U caruser -d cardb"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caruser} -d ${POSTGRES_DB:-cardb}"]
       interval: 5s
       timeout: 3s
       retries: 5

@@ -383,9 +383,19 @@ def update_user_profile(user_id: int, name: str) -> Dict[str, Any]:
     return user
 
 
+def hash_token(token: str) -> str:
+    """Compute SHA-256 hash of a session token for secure storage at rest."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def create_session(user_id: int, expires_days: int = 7) -> str:
-    """Create a persistent session token."""
-    token = secrets.token_urlsafe(32)
+    """Create a persistent session token.
+
+    Stores the SHA-256 hash of the token in the database to prevent token leakage
+    if the database is ever compromised, while returning the raw token to the caller.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hash_token(raw_token)
     now = datetime.now(timezone.utc)
     from datetime import timedelta
     expires = now + timedelta(days=expires_days)
@@ -395,35 +405,47 @@ def create_session(user_id: int, expires_days: int = 7) -> str:
         cursor.execute("""
             INSERT INTO sessions (token, user_id, created_at, expires_at)
             VALUES (?, ?, ?, ?);
-        """, (token, user_id, now.isoformat(), expires.isoformat()))
+        """, (token_hash, user_id, now.isoformat(), expires.isoformat()))
         cursor.execute("""
             UPDATE users SET last_login_at = ? WHERE id = ?;
         """, (now.isoformat(), user_id))
         conn.commit()
 
-    return token
+    return raw_token
 
 
 def get_user_from_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify session token and return user if token is valid and not expired."""
     now_iso = datetime.now(timezone.utc).isoformat()
+    token_hash = hash_token(token)
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT u.id, u.name, u.email, u.role, u.status, u.created_at, u.updated_at, u.last_login_at
             FROM sessions s
             JOIN users u ON s.user_id = u.id
-            WHERE s.token = ? AND s.expires_at > ? AND u.status = 'active';
-        """, (token, now_iso))
+            WHERE (s.token = ? OR s.token = ?) AND s.expires_at > ? AND u.status = 'active';
+        """, (token_hash, token, now_iso))
         row = cursor.fetchone()
         return dict(row) if row else None
 
 
 def revoke_session(token: str) -> None:
     """Delete session token on logout."""
+    token_hash = hash_token(token)
     with _get_connection() as conn:
-        conn.execute("DELETE FROM sessions WHERE token = ?;", (token,))
+        conn.execute("DELETE FROM sessions WHERE token = ? OR token = ?;", (token_hash, token))
         conn.commit()
+
+
+def cleanup_expired_sessions() -> int:
+    """Remove expired sessions from the database."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sessions WHERE expires_at <= ?;", (now_iso,))
+        conn.commit()
+        return cursor.rowcount
 
 
 def revoke_all_user_sessions(user_id: int) -> int:

@@ -161,3 +161,40 @@ On first startup, the application initializes the database schema and checks if 
   - If an admin account already exists in the database, `init_db()` will **never** overwrite or alter its password on restart.
 - **Development Fallback:**
   - In development (`ENVIRONMENT=development`), if credentials are not configured, the server creates a temporary `dev-admin@localhost` account with a single-use random password printed once to the console.
+
+---
+
+## 10. Production TLS / HTTPS Architecture & Reverse Proxy Configuration
+
+In production environments, all user and API traffic **must** be encrypted via HTTPS:
+
+1. **TLS Termination Layer:**
+   - Terminate TLS 1.3 at Cloudflare Edge, AWS Application Load Balancer (ALB), or an ingress reverse proxy.
+   - Configure modern TLS ciphers (`ECDHE-ECDSA-AES128-GCM-SHA256`, `ECDHE-RSA-AES128-GCM-SHA256`, `ECDHE-ECDSA-AES256-GCM-SHA384`).
+   - Enable HTTP Strict Transport Security (HSTS): `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload`.
+
+2. **Trusted Proxy Headers:**
+   - Configure your reverse proxy to forward the client protocol and IP:
+     ```nginx
+     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     ```
+   - On the backend container, specify `TRUSTED_PROXY_IPS` in `.env` (e.g. `10.0.0.0/8,172.16.0.0/12`) so client IP extraction only trusts addresses received from known edge balancers, preventing IP-spoofing rate limit bypasses.
+
+3. **Cookie Security:**
+   - When `ENVIRONMENT=production`, the backend strictly enforces `Secure=True` on session cookies (`auth_token`) so credentials are never transmitted over unencrypted HTTP.
+   - `SameSite=Lax` and `HttpOnly=True` protect against CSRF and cross-site scripting (XSS) token theft.
+
+---
+
+## 11. Production Security Hardening Checklist
+
+- [x] **No Secrets in Source:** All passwords, tokens, and database credentials use secret manager placeholders.
+- [x] **Session Token Hashing:** Database stores SHA-256 hashes of session tokens at rest; raw tokens are never persisted.
+- [x] **Double-Submit CSRF Protection:** All state-changing API endpoints (`POST`, `PUT`, `PATCH`, `DELETE`) require `X-CSRF-Token` headers when authenticating via cookies.
+- [x] **Strict CORS Policy:** Wildcard origins with credentials prohibited; explicit production domains required.
+- [x] **Cryptographic ML Integrity:** ML pipeline validates SHA-256 checksum of `car_price_model.pkl` prior to deserialization.
+- [x] **Non-Root Docker Containers:** Containers execute as unprivileged `appuser:1000` with dropped Linux capabilities (`cap_drop: [ALL]`).
+- [x] **Resource Limits:** Docker containers enforce CPU and memory caps to mitigate DoS / resource exhaustion.
+- [x] **Path Traversal & Attachment Guards:** Uploaded support files validate binary magic bytes and enforce path boundary checks (`is_relative_to`).
+- [x] **Automated Security Pipeline:** GitHub Actions workflow executes tests, audits, and linting on every commit.

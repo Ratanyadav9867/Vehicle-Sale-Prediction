@@ -1,19 +1,19 @@
-# Vehicle Sales Prediction — Backend dependencies
+# Vehicle Sales Prediction — Production Hardened Dependencies
+# Pinned to tested, compatible versions to prevent supply-chain floating dependency attacks.
 # Install with: pip install -r requirements.txt
 
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-pydantic>=2.0.0
-python-multipart>=0.0.6
-# .env loading is handled by backend/utils/dotenv_loader.py (zero stdlib deps — no package needed)
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+pydantic==2.13.4
+python-multipart>=0.0.9
 
-# ML inference (same as ml/requirements-ml.txt)
-scikit-learn>=1.3.0
-joblib>=1.3.0
-pandas>=2.0.0
-numpy>=1.24.0
+# ML inference
+scikit-learn==1.8.0
+joblib==1.5.3
+pandas==3.0.2
+numpy==2.4.2
 
 # Testing
-pytest>=7.0.0
-httpx>=0.24.0
+pytest==9.1.1
+httpx==0.28.1
 pytest-asyncio>=0.21.0

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -9,12 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt \
     && pip install --no-cache-dir --prefix=/install gunicorn redis psycopg2-binary
 
-# Runtime stage
-FROM python:3.11-slim
+# Runtime stage (Minimal, hardened image)
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
@@ -31,9 +31,9 @@ COPY --from=builder /install /usr/local
 COPY backend/ ./backend/
 COPY ml/ ./ml/
 
-# Create non-root user for security
+# Create unprivileged non-root user (appuser:1000) for security isolation
 RUN useradd -m -u 1000 appuser && \
-    mkdir -p /app/data && \
+    mkdir -p /app/backend/data && \
     chown -R appuser:appuser /app
 
 USER appuser
