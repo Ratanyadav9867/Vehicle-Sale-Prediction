@@ -1,0 +1,81 @@
+{
+  "model_name": "GradientBoostingRegressor (Tuned)",
+  "feature_columns": [
+    "Present_Price",
+    "Kms_Driven",
+    "Fuel_Type",
+    "Seller_Type",
+    "Transmission",
+    "Owner",
+    "Car_Age"
+  ],
+  "numerical_features": [
+    "Present_Price",
+    "Kms_Driven",
+    "Car_Age",
+    "Owner"
+  ],
+  "categorical_features": [
+    "Fuel_Type",
+    "Seller_Type",
+    "Transmission"
+  ],
+  "target": "Selling_Price",
+  "training_rows": 240,
+  "testing_rows": 61,
+  "mae": 0.4539,
+  "rmse": 0.712,
+  "r2": 0.961,
+  "available_categories": {
+    "Fuel_Type": [
+      "Petrol",
+      "Diesel",
+      "Cng"
+    ],
+    "Seller_Type": [
+      "Dealer",
+      "Individual"
+    ],
+    "Transmission": [
+      "Manual",
+      "Automatic"
+    ],
+    "Owner": [
+      0,
+      1,
+      2,
+      3
+    ]
+  },
+  "hyperparams": {
+    "mdl__subsample": "1.0",
+    "mdl__n_estimators": "300",
+    "mdl__max_depth": "3",
+    "mdl__learning_rate": "0.05"
+  },
+  "current_year_used": 2026,
+  "training_date": "2026-09-19T16:47:31.302159",
+  "dataset_file": "car data.csv",
+  "dataset_rows": 301,
+  "dataset_cols": 9,
+  "baseline_comparison": [
+    {
+      "Model": "GradientBoostingRegressor",
+      "MAE": 0.4825,
+      "RMSE": 0.7357,
+      "R2": 0.9583
+    },
+    {
+      "Model": "RandomForestRegressor",
+      "MAE": 0.5294,
+      "RMSE": 0.7927,
+      "R2": 0.9516
+    },
+    {
+      "Model": "LinearRegression",
+      "MAE": 1.2942,
+      "RMSE": 1.7114,
+      "R2": 0.7746
+    }
+  ]
+}

@@ -13,11 +13,13 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# ML artifacts (tracked separately via DVC or manually)
+# ML artifacts (tracked models and metadata)
 ml/models/*.pkl
+!ml/models/car_price_model.pkl
 ml/models/*.joblib
 ml/artifacts/*.pkl
 ml/artifacts/*.json
+!ml/artifacts/model_metadata.json
 
 # Env vars
 .env

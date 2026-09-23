@@ -35,6 +35,7 @@ jobs:
           ENVIRONMENT: test
           COOKIE_SECURE: false
           SPECIFIC_AUTH_ERRORS: true
+          PYTHONPATH: .
         run: |
           python -m pytest tests/ -v
 
