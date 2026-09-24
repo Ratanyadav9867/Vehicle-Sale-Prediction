@@ -27,6 +27,7 @@ from backend.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
     COMMON_PASSWORDS,
+    CurrentUserResponse,
     LoginRequest,
     RegisterRequest,
     UpdateProfileRequest,
@@ -58,6 +59,22 @@ else:
 _COOKIE_MAX_AGE_DEFAULT = 7 * 24 * 3600   # 7 days in seconds
 _COOKIE_MAX_AGE_REMEMBER = 30 * 24 * 3600  # 30 days
 
+# SameSite cookie attribute:
+# In cross-site production deployments (e.g. Vercel frontend on *.vercel.app calling
+# Railway backend on *.up.railway.app), cookies MUST have SameSite=None and Secure=True
+# so browsers send them on cross-site asynchronous fetch/XHR requests.
+# In local development over plain HTTP, browsers reject SameSite=None without Secure,
+# and reject Secure over HTTP; therefore SameSite=Lax is used for local dev.
+_raw_samesite = os.getenv("COOKIE_SAMESITE", "none" if _COOKIE_SECURE else "lax").strip().lower()
+if _raw_samesite in ("none", "lax", "strict"):
+    _COOKIE_SAMESITE: str = _raw_samesite
+else:
+    _COOKIE_SAMESITE = "none" if _COOKIE_SECURE else "lax"
+
+# Browser security invariant: SameSite=None MUST be accompanied by Secure=True.
+if _COOKIE_SAMESITE == "none" and not _COOKIE_SECURE:
+    _COOKIE_SAMESITE = "lax"
+
 
 import secrets
 
@@ -71,7 +88,7 @@ def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_
         key=_COOKIE_NAME,
         value=token,
         httponly=True,            # Not accessible to JavaScript — XSS-safe
-        samesite="lax",           # Allows normal navigation; blocks foreign CSRF
+        samesite=_COOKIE_SAMESITE,# "none" for cross-site prod, "lax" for dev
         secure=_COOKIE_SECURE,    # Strictly True in production (HTTPS), False in dev (HTTP)
         max_age=max_age,
         path="/",
@@ -80,19 +97,24 @@ def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_
     response.set_cookie(
         key="csrf_token",
         value=csrf_token,
-        httponly=False,           # Readable by frontend Axios for Double-Submit CSRF protection
-        samesite="lax",
+        httponly=False,           # Readable by frontend for Double-Submit CSRF protection
+        samesite=_COOKIE_SAMESITE,
         secure=_COOKIE_SECURE,
         max_age=max_age,
         path="/",
     )
+    response.headers["X-CSRF-Token"] = csrf_token
 
 
 def _clear_auth_cookie(response: Response) -> None:
     """Clear the session and CSRF cookies (expire immediately)."""
-    response.delete_cookie(key="auth_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
-    response.delete_cookie(key="__Host-auth_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
-    response.delete_cookie(key="csrf_token", path="/", samesite="lax", secure=_COOKIE_SECURE)
+    for key in ("__Host-auth_token", "auth_token", "csrf_token"):
+        response.delete_cookie(
+            key=key,
+            path="/",
+            samesite=_COOKIE_SAMESITE,
+            secure=_COOKIE_SECURE,
+        )
 
 # ── Configuration: Specific Auth Errors vs Generic Message ─────────────────────
 # When True: distinct INVALID_EMAIL vs INVALID_PASSWORD errors.
@@ -506,33 +528,36 @@ def get_csrf_token(request: Request, response: Response):
         key="csrf_token",
         value=token,
         httponly=False,
-        samesite="lax",
+        samesite=_COOKIE_SAMESITE,
         secure=_COOKIE_SECURE,
         max_age=_COOKIE_MAX_AGE_DEFAULT,
         path="/",
     )
+    response.headers["X-CSRF-Token"] = token
     return {"csrf_token": token}
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=CurrentUserResponse)
 def get_current_user_profile(
     request: Request,
     response: Response,
     user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
     """Fetch profile of the currently logged-in user and ensure valid CSRF token."""
-    if not request.cookies.get("csrf_token"):
+    token = request.cookies.get("csrf_token")
+    if not token:
         token = secrets.token_urlsafe(24)
         response.set_cookie(
             key="csrf_token",
             value=token,
             httponly=False,
-            samesite="lax",
+            samesite=_COOKIE_SAMESITE,
             secure=_COOKIE_SECURE,
             max_age=_COOKIE_MAX_AGE_DEFAULT,
             path="/",
         )
-    return UserResponse(**user)
+    response.headers["X-CSRF-Token"] = token
+    return CurrentUserResponse(**user)
 
 
 @router.put("/profile", response_model=UserResponse)

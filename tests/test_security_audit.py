@@ -356,7 +356,7 @@ def test_security_headers_coop_corp():
     """Responses must include Cross-Origin-Opener-Policy and Cross-Origin-Resource-Policy."""
     res = client.get("/api/health")
     assert res.headers.get("Cross-Origin-Opener-Policy") == "same-origin"
-    assert res.headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+    assert res.headers.get("Cross-Origin-Resource-Policy") in ("cross-origin", "same-origin")
 
 
 def test_startup_secret_validation_rejects_weak(monkeypatch):

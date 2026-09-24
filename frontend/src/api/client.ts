@@ -30,18 +30,72 @@ export const http = axios.create({
   },
 });
 
-// SECURITY FIX: No longer injecting Authorization header from localStorage.
-// Authentication is handled via the httpOnly session cookie, which is attached
-// automatically by the browser when withCredentials=true. This interceptor is
-// kept as a no-op placeholder to avoid breaking any future explicit overrides.
-http.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  // Cookie is sent automatically — no manual token handling required.
+let currentCsrfToken: string | null = null;
+let csrfFetchPromise: Promise<string | null> | null = null;
+
+export const setCsrfToken = (token: string | null) => {
+  currentCsrfToken = token;
+  if (token) {
+    http.defaults.headers.common['X-CSRF-Token'] = token;
+  } else {
+    delete http.defaults.headers.common['X-CSRF-Token'];
+  }
+};
+
+export const getCsrfToken = (): string | null => currentCsrfToken;
+
+export const ensureCsrfToken = async (): Promise<string | null> => {
+  if (currentCsrfToken) return currentCsrfToken;
+  if (!csrfFetchPromise) {
+    csrfFetchPromise = axios
+      .get<{ csrf_token: string }>(`${BASE_URL}/api/auth/csrf`, {
+        withCredentials: true,
+        headers: { Accept: 'application/json' },
+      })
+      .then(res => {
+        const token =
+          (res.headers['x-csrf-token'] as string) ||
+          (res.headers['X-CSRF-Token'] as string) ||
+          res.data?.csrf_token;
+        if (token) {
+          setCsrfToken(token);
+          return token;
+        }
+        return null;
+      })
+      .catch(() => null)
+      .finally(() => {
+        csrfFetchPromise = null;
+      });
+  }
+  return csrfFetchPromise;
+};
+
+// Request interceptor: attach X-CSRF-Token for state-changing calls across cross-site domains
+http.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  const method = config.method?.toLowerCase() || '';
+  if (['post', 'put', 'patch', 'delete'].includes(method)) {
+    if (!config.headers['X-CSRF-Token']) {
+      const token = currentCsrfToken || (await ensureCsrfToken());
+      if (token) {
+        config.headers['X-CSRF-Token'] = token;
+      }
+    }
+  }
   return config;
 });
 
 // Centralized response & error interceptor
 http.interceptors.response.use(
-  response => response,
+  response => {
+    const csrfHeader =
+      (response.headers['x-csrf-token'] as string) ||
+      (response.headers['X-CSRF-Token'] as string);
+    if (csrfHeader && typeof csrfHeader === 'string') {
+      setCsrfToken(csrfHeader);
+    }
+    return response;
+  },
   (error: AxiosError<{ detail?: any; code?: string; message?: string }>) => {
     let message = 'An unexpected error occurred while communicating with the server.';
     let code = (error.response?.data as any)?.code || (error.response?.data?.detail as any)?.code;
@@ -125,7 +179,10 @@ export const api = {
       http.post<AuthResponse>('/api/auth/admin-login', data).then(r => r.data),
 
     me: (): Promise<{ user: User }> =>
-      http.get<{ user: User }>('/api/auth/me').then(r => r.data),
+      http.get<any>('/api/auth/me').then(r => {
+        const user = r.data?.user || r.data;
+        return { user };
+      }),
 
     updateProfile: (data: { name: string }): Promise<User> =>
       http.put<User>('/api/auth/profile', data).then(r => r.data),
@@ -138,7 +195,10 @@ export const api = {
       http.put<{ message: string; token?: string }>('/api/auth/change-password', data).then(r => r.data),
 
     logout: (): Promise<{ message: string }> =>
-      http.post<{ message: string }>('/api/auth/logout').then(r => r.data),
+      http.post<{ message: string }>('/api/auth/logout').then(r => {
+        setCsrfToken(null);
+        return r.data;
+      }),
   },
 
   // Audit Logs Endpoints

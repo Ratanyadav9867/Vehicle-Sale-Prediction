@@ -103,6 +103,23 @@ class UserResponse(BaseModel):
     last_login_at: Optional[str] = None
 
 
+class CurrentUserResponse(UserResponse):
+    user: Optional[UserResponse] = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.user is None:
+            self.user = UserResponse(
+                id=self.id,
+                name=self.name,
+                email=self.email,
+                role=self.role,
+                status=self.status,
+                created_at=self.created_at,
+                updated_at=self.updated_at,
+                last_login_at=self.last_login_at,
+            )
+
+
 class AuthResponse(BaseModel):
     token: Optional[str] = None
     user: UserResponse

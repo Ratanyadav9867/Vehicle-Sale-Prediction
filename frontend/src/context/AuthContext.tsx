@@ -37,7 +37,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const restoreSession = useCallback(async () => {
     try {
       const response = await api.auth.me();
-      setUser(response.user);
+      const currentUser = (response as any)?.user || response;
+      setUser(currentUser);
     } catch {
       // No valid session cookie — user is logged out
       setUser(null);
@@ -102,7 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refreshUser = async (): Promise<void> => {
     try {
       const response = await api.auth.me();
-      setUser(response.user);
+      const currentUser = (response as any)?.user || response;
+      setUser(currentUser);
     } catch {
       // Keep existing state if offline
     }

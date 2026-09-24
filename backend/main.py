@@ -215,7 +215,7 @@ async def csrf_protect_middleware(request: Request, call_next):
 import os as _os
 _raw_origins = _os.getenv("ALLOWED_ORIGINS", "")
 _ALLOWED_ORIGINS: list = (
-    [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
     if _raw_origins.strip()
     else [
         "http://localhost:5173",   # Vite dev server
@@ -231,6 +231,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With", "X-CSRF-Token", "X-XSRF-Token"],
+    expose_headers=["X-CSRF-Token", "x-csrf-token"],
 )
 
 # ── Security Headers Middleware ───────────────────────────────────────────────
@@ -249,7 +250,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     # Cross-Origin Isolation & Embedding Protections
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
     # Content-Security-Policy: API only serves JSON; no scripts/styles needed
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; "
