@@ -247,7 +247,7 @@ export default function Login() {
                   if (emailError) setEmailError(null);
                 }}
                 placeholder="name@example.com"
-                className={`w-full px-4 py-2.5 rounded-xl bg-white/5 border text-sm text-white placeholder-gray-500 focus:outline-none transition-all ${
+                className={`w-full min-h-[48px] px-4 py-3 rounded-xl bg-white/5 border text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none transition-all ${
                   emailError
                     ? 'border-rose-500/60 ring-2 ring-rose-500/20 focus:border-rose-500 focus:ring-rose-500/30'
                     : 'border-white/10 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30'
@@ -270,7 +270,7 @@ export default function Login() {
                   <button
                     type="button"
                     onClick={() => setForgotModal(true)}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                    className="min-h-[44px] py-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer inline-flex items-center"
                   >
                     Forgot password?
                   </button>
@@ -287,7 +287,7 @@ export default function Login() {
                     if (passwordError) setPasswordError(null);
                   }}
                   placeholder="Enter your password"
-                  className={`w-full px-4 py-2.5 pr-11 rounded-xl bg-white/5 border text-sm text-white placeholder-gray-500 focus:outline-none transition-all ${
+                  className={`w-full min-h-[48px] px-4 py-3 pr-11 rounded-xl bg-white/5 border text-base sm:text-sm text-white placeholder-gray-500 focus:outline-none transition-all ${
                     passwordError
                       ? 'border-rose-500/60 ring-2 ring-rose-500/20 focus:border-rose-500 focus:ring-rose-500/30'
                       : 'border-white/10 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30'
@@ -296,7 +296,7 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPassword(s => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors cursor-pointer p-1"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors cursor-pointer p-2 min-h-[44px] min-w-[44px] flex items-center justify-center"
                   tabIndex={-1}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
@@ -327,7 +327,7 @@ export default function Login() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full mt-2 py-3 px-4 rounded-xl font-semibold text-white bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 shadow-lg shadow-emerald-500/25 transition-all transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2"
+              className="w-full min-h-[48px] mt-2 py-3.5 px-4 rounded-xl font-bold text-white bg-gradient-to-r from-emerald-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 active:scale-98 shadow-lg shadow-emerald-500/25 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-2 text-sm sm:text-base"
             >
               {isLoading ? (
                 <>

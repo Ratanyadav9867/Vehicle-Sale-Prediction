@@ -99,8 +99,14 @@ async def lifespan(app: FastAPI):
 
 # ── App Configuration ─────────────────────────────────────────────────────────
 import os as _os
-_ENV = _os.getenv("ENVIRONMENT", "development").strip().lower()
-_IS_PROD = _ENV == "production"
+_raw_env = _os.getenv("ENVIRONMENT", "development").strip().lower()
+_IS_PROD = (
+    _raw_env in ("production", "prod")
+    or _os.getenv("RAILWAY_ENVIRONMENT", "").strip().lower() in ("production", "prod")
+    or bool(_os.getenv("RAILWAY_PROJECT_ID"))
+    or bool(_os.getenv("RAILWAY_PUBLIC_DOMAIN"))
+    or "postgres" in _os.getenv("DATABASE_URL", "").lower()
+)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -214,16 +220,17 @@ async def csrf_protect_middleware(request: Request, call_next):
 # Fallback list covers only localhost dev origins — never includes "*".
 import os as _os
 _raw_origins = _os.getenv("ALLOWED_ORIGINS", "")
-_ALLOWED_ORIGINS: list = (
-    [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
-    if _raw_origins.strip()
-    else [
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:3000",   # CRA / other React servers
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ]
-)
+_configured_origins = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
+
+_DEFAULT_ALLOWED_ORIGINS = [
+    "https://vehicle-sale-prediction.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+
+_ALLOWED_ORIGINS: list = list(dict.fromkeys(_configured_origins + _DEFAULT_ALLOWED_ORIGINS))
 
 app.add_middleware(
     CORSMiddleware,

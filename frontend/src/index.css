@@ -6,17 +6,45 @@
     --accent-2: 245 80% 65%;
   }
 
-  * { box-sizing: border-box; }
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
 
   html {
     scroll-behavior: smooth;
     background-color: #030407;
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
     @apply text-gray-100 antialiased;
     background-color: transparent;
     font-family: 'Inter', system-ui, sans-serif;
+    overscroll-behavior-y: none;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Prevent text zoom on input focus in iOS Safari */
+  @media screen and (max-width: 768px) {
+    input, select, textarea {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Safe Area insets utility classes for modern mobile screens */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .mb-safe {
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .bottom-nav-pad {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
   }
 
   ::-webkit-scrollbar { width: 6px; }

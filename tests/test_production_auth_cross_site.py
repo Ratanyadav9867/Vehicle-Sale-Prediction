@@ -185,13 +185,15 @@ def test_cors_with_exact_vercel_origin_and_credentials():
             "Access-Control-Request-Headers": "X-CSRF-Token, Content-Type",
         },
     )
-    # Check origin handling: if vercel_origin is in ALLOWED_ORIGINS
-    from backend.main import _ALLOWED_ORIGINS
-    if vercel_origin in _ALLOWED_ORIGINS:
-        assert res_opts.headers.get("access-control-allow-origin") == vercel_origin
-        assert res_opts.headers.get("access-control-allow-credentials") == "true"
-        exposed = res_opts.headers.get("access-control-expose-headers", "").lower()
-        assert "x-csrf-token" in exposed
+    assert res_opts.headers.get("access-control-allow-origin") == vercel_origin
+    assert res_opts.headers.get("access-control-allow-credentials") == "true"
+
+    # Actual GET request must include exposed headers
+    res_get = client.get("/api/health", headers={"Origin": vercel_origin})
+    assert res_get.headers.get("access-control-allow-origin") == vercel_origin
+    assert res_get.headers.get("access-control-allow-credentials") == "true"
+    exposed = res_get.headers.get("access-control-expose-headers", "").lower()
+    assert "x-csrf-token" in exposed
 
     # Untrusted origin must NOT receive access-control-allow-origin
     evil_origin = "https://evil-spoofing-site.com"
@@ -316,3 +318,46 @@ def test_development_mode_cookie_settings_fallback():
         auth_mod._COOKIE_SECURE = orig_secure
         auth_mod._COOKIE_SAMESITE = orig_samesite
         auth_mod._COOKIE_NAME = orig_name
+
+
+def test_integration_login_set_cookie_to_me_flow():
+    """
+    End-to-end integration:
+      POST /api/auth/login
+      -> capture Set-Cookie
+      -> GET /api/auth/me using captured cookie
+      -> expect HTTP 200 with authenticated user.
+    """
+    _ensure_test_user("flow_user@test.com", "SecurePass#123")
+    client = TestClient(app, raise_server_exceptions=True)
+
+    auth_mod.clear_failed_auth(email="flow_user@test.com")
+
+    # 1. POST /api/auth/login with production headers
+    login_res = client.post(
+        "/api/auth/login",
+        json={"email": "flow_user@test.com", "password": "SecurePass#123"},
+        headers={"X-Forwarded-Proto": "https", "Origin": "https://vehicle-sale-prediction.vercel.app"},
+    )
+    assert login_res.status_code == 200
+
+    # 2. Capture Set-Cookie headers
+    set_cookie_headers = login_res.headers.getlist("set-cookie") if hasattr(login_res.headers, "getlist") else [login_res.headers.get("set-cookie", "")]
+    combined_cookies = " ;; ".join(set_cookie_headers)
+    assert "auth_token=" in combined_cookies
+
+    # 3. Create a clean fresh client without prior state, attach captured cookies
+    new_client = TestClient(app, raise_server_exceptions=True)
+    for c_key, c_val in login_res.cookies.items():
+        new_client.cookies.set(c_key, c_val)
+
+    # 4. GET /api/auth/me using captured cookie
+    me_res = new_client.get(
+        "/api/auth/me",
+        headers={"X-Forwarded-Proto": "https", "Origin": "https://vehicle-sale-prediction.vercel.app"},
+    )
+    assert me_res.status_code == 200
+    me_data = me_res.json()
+    assert me_data["email"] == "flow_user@test.com"
+    assert me_data["user"]["email"] == "flow_user@test.com"
+

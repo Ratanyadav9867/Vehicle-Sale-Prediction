@@ -54,14 +54,22 @@ export default defineConfig({
         ],
       },
       workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
         globPatterns: ['**/*.{js,css,html,ico,png,svg,webp,woff2}'],
         globIgnores: ['**/models/**', '**/videos/**'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api/, /^\/auth/, /^\/healthz/, /^\/readyz/, /^\/metrics/],
         runtimeCaching: [
           {
-            // API endpoints: STRICT NETWORK ONLY - NEVER CACHE
-            urlPattern: ({ url }) => url.pathname.startsWith('/api') || url.pathname.startsWith('/auth'),
+            // API endpoints: STRICT NETWORK ONLY - NEVER CACHE SENSITIVE RESPONSES
+            urlPattern: ({ url }) =>
+              url.origin.includes('railway.app') ||
+              url.pathname.startsWith('/api') ||
+              url.pathname.startsWith('/auth') ||
+              url.pathname.startsWith('/healthz') ||
+              url.pathname.startsWith('/readyz') ||
+              url.pathname.startsWith('/metrics'),
             handler: 'NetworkOnly',
             options: {
               backgroundSync: undefined,

@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext';
 import Navbar from './components/layout/Navbar';
 import Footer from './components/layout/Footer';
 import PublicLayout from './components/layout/PublicLayout';
+import MobileBottomNav from './components/layout/MobileBottomNav';
 import ScrollToTop from './components/common/ScrollToTop';
 import PageLoader from './components/common/PageLoader';
 import VideoBackground from './components/ui/VideoBackground';
@@ -60,6 +61,9 @@ export default function App() {
         {/* Global Persistent Video Background mounted ONCE across entire application */}
         <VideoBackground />
 
+        {/* Mobile-first bottom app navigation */}
+        <MobileBottomNav />
+
         <Suspense fallback={<PageLoader />}>
           <Routes>
             {/* Public Layout with continuous background video across public pages */}
@@ -86,7 +90,7 @@ export default function App() {
               path="/predict"
               element={
                 <ProtectedRoute>
-                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-emerald-500 selection:text-white">
+                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-emerald-500 selection:text-white pb-20 md:pb-0">
                     <Navbar />
                     <main className="pt-16 flex-1 flex flex-col">
                       <Predict />
@@ -101,7 +105,7 @@ export default function App() {
               path="/dashboard"
               element={
                 <ProtectedRoute>
-                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-sky-500 selection:text-white">
+                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-sky-500 selection:text-white pb-20 md:pb-0">
                     <Navbar />
                     <main className="pt-16 flex-1 flex flex-col">
                       <UserDashboard />
@@ -116,7 +120,7 @@ export default function App() {
               path="/admin/dashboard"
               element={
                 <AdminRoute>
-                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white">
+                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white pb-20 md:pb-0">
                     <Navbar />
                     <main className="pt-16 flex-1 flex flex-col">
                       <AdminDashboard />
@@ -131,7 +135,7 @@ export default function App() {
               path="/admin/logs"
               element={
                 <AdminRoute>
-                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white">
+                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white pb-20 md:pb-0">
                     <Navbar />
                     <main className="pt-16 flex-1 flex flex-col">
                       <AdminLogs />
@@ -146,7 +150,7 @@ export default function App() {
               path="/admin/support"
               element={
                 <AdminRoute>
-                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white">
+                  <div className="min-h-screen bg-transparent text-gray-100 flex flex-col selection:bg-amber-500 selection:text-white pb-20 md:pb-0">
                     <Navbar />
                     <main className="pt-16 flex-1 flex flex-col">
                       <AdminSupport />

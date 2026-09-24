@@ -117,8 +117,8 @@ export default function Navbar() {
 
   return (
     <>
-      <header className="fixed top-0 inset-x-0 z-50 bg-gray-950/90 backdrop-blur-xl border-b border-white/10 shadow-lg shadow-black/30">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
+      <header className="fixed top-0 inset-x-0 z-50 bg-gray-950/90 backdrop-blur-xl border-b border-white/10 shadow-lg shadow-black/30 pt-[env(safe-area-inset-top,0px)]">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4 select-none">
           {/* LEFT: Burger Menu + Brand Logo (Car Worth) */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             {/* Burger Button */}
@@ -128,7 +128,7 @@ export default function Navbar() {
               aria-label="Open Navigation Menu"
               aria-expanded={drawerOpen}
               aria-controls="slideout-sidebar"
-              className="p-2 sm:p-2.5 rounded-xl text-gray-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50 cursor-pointer"
+              className="p-2.5 rounded-xl text-gray-300 hover:text-white hover:bg-white/10 active:bg-white/15 transition-colors focus:outline-none focus:ring-2 focus:ring-sky-500/50 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
             >
               <svg className="w-5 h-5 sm:w-6 sm:h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
@@ -138,7 +138,7 @@ export default function Navbar() {
             {/* Logo -> Car Worth linking to "/" */}
             <Link
               to="/"
-              className="flex items-center gap-2 sm:gap-2.5 group cursor-pointer text-left focus:outline-none"
+              className="flex items-center gap-2 sm:gap-2.5 group cursor-pointer text-left focus:outline-none min-h-[44px]"
               aria-label="Car Worth Home"
             >
               {/* Responsive Logo: full emblem on normal viewports, compact mark on ultra-small <=360px */}
@@ -149,7 +149,7 @@ export default function Navbar() {
                 height={42}
                 className="h-9 sm:h-11 w-auto object-contain transition-transform duration-300 group-hover:scale-105 drop-shadow-[0_4px_12px_rgba(0,0,0,0.6)]"
               />
-              <div className="hidden min-[390px]:flex flex-col justify-center">
+              <div className="hidden min-[380px]:flex flex-col justify-center">
                 <span className="text-sm sm:text-lg font-black tracking-tight text-white group-hover:text-amber-300 transition-colors leading-tight">
                   Car Worth
                 </span>

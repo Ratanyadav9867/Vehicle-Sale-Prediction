@@ -42,16 +42,34 @@ from backend.utils.rate_limiter import enforce_rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
+def is_production_environment() -> bool:
+    """Robustly detect production across Railway, Vercel, and custom deployments."""
+    env = os.getenv("ENVIRONMENT", "").strip().lower()
+    if env in ("production", "prod"):
+        return True
+    railway_env = os.getenv("RAILWAY_ENVIRONMENT", "").strip().lower()
+    if railway_env in ("production", "prod"):
+        return True
+    if os.getenv("RAILWAY_PROJECT_ID") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("RAILWAY_SERVICE_ID"):
+        return True
+    db_url = os.getenv("DATABASE_URL", "").strip().lower()
+    if db_url.startswith("postgres://") or db_url.startswith("postgresql://"):
+        return True
+    return False
+
+
 # SECURITY FIX: cookie settings
-# When ENVIRONMENT=production, strictly enforce COOKIE_SECURE=True to prevent
-# transmission over unencrypted connections regardless of env var oversight.
+# When in production or over HTTPS, strictly enforce COOKIE_SECURE=True and SameSite=None
+# to allow cross-site credentials from Vercel to Railway.
 _ENV = os.getenv("ENVIRONMENT", "development").strip().lower()
-if _ENV == "production":
+_IS_PROD_DEPLOY = is_production_environment()
+
+if _IS_PROD_DEPLOY or _ENV == "production":
     _COOKIE_SECURE: bool = True
     if os.getenv("COOKIE_SECURE", "").strip().lower() == "false":
         import logging as _auth_logging
         _auth_logging.getLogger(__name__).warning(
-            "COOKIE_SECURE was set to false, but ENVIRONMENT=production enforces secure=True."
+            "COOKIE_SECURE was set to false, but production environment enforces secure=True."
         )
 else:
     _COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").strip().lower() == "true"
@@ -59,19 +77,12 @@ else:
 _COOKIE_MAX_AGE_DEFAULT = 7 * 24 * 3600   # 7 days in seconds
 _COOKIE_MAX_AGE_REMEMBER = 30 * 24 * 3600  # 30 days
 
-# SameSite cookie attribute:
-# In cross-site production deployments (e.g. Vercel frontend on *.vercel.app calling
-# Railway backend on *.up.railway.app), cookies MUST have SameSite=None and Secure=True
-# so browsers send them on cross-site asynchronous fetch/XHR requests.
-# In local development over plain HTTP, browsers reject SameSite=None without Secure,
-# and reject Secure over HTTP; therefore SameSite=Lax is used for local dev.
 _raw_samesite = os.getenv("COOKIE_SAMESITE", "none" if _COOKIE_SECURE else "lax").strip().lower()
 if _raw_samesite in ("none", "lax", "strict"):
     _COOKIE_SAMESITE: str = _raw_samesite
 else:
     _COOKIE_SAMESITE = "none" if _COOKIE_SECURE else "lax"
 
-# Browser security invariant: SameSite=None MUST be accompanied by Secure=True.
 if _COOKIE_SAMESITE == "none" and not _COOKIE_SECURE:
     _COOKIE_SAMESITE = "lax"
 
@@ -82,14 +93,48 @@ import secrets
 _COOKIE_NAME = "__Host-auth_token" if _COOKIE_SECURE else "auth_token"
 
 
-def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_AGE_DEFAULT) -> None:
-    """Attach the httpOnly session cookie and readable CSRF token cookie to a response."""
+def _resolve_cookie_security(request: Optional[Request] = None) -> Tuple[bool, str]:
+    """Resolve whether the current response must set Secure and SameSite=None cookies."""
+    is_secure = _COOKIE_SECURE
+    if request:
+        proto = request.headers.get("x-forwarded-proto", "").lower()
+        if proto == "https" or request.url.scheme == "https":
+            is_secure = True
+    samesite = "none" if is_secure else "lax"
+    return is_secure, samesite
+
+
+def _set_auth_cookie(
+    response: Response,
+    token: str,
+    max_age: int = _COOKIE_MAX_AGE_DEFAULT,
+    request: Optional[Request] = None,
+) -> None:
+    """
+    Attach the httpOnly session cookie and readable CSRF token cookie to a response.
+    When secure (HTTPS / production), sets both __Host-auth_token and auth_token
+    with SameSite=None and Secure=True, host-only (no domain attribute).
+    """
+    is_secure, samesite = _resolve_cookie_security(request)
+
+    if is_secure:
+        # RFC 6265bis __Host- cookie: requires Secure, Path=/, no domain
+        response.set_cookie(
+            key="__Host-auth_token",
+            value=token,
+            httponly=True,
+            samesite="none",
+            secure=True,
+            max_age=max_age,
+            path="/",
+        )
+    # Also set auth_token with matching security attributes
     response.set_cookie(
-        key=_COOKIE_NAME,
+        key="auth_token",
         value=token,
-        httponly=True,            # Not accessible to JavaScript — XSS-safe
-        samesite=_COOKIE_SAMESITE,# "none" for cross-site prod, "lax" for dev
-        secure=_COOKIE_SECURE,    # Strictly True in production (HTTPS), False in dev (HTTP)
+        httponly=True,
+        samesite=samesite,
+        secure=is_secure,
         max_age=max_age,
         path="/",
     )
@@ -97,24 +142,27 @@ def _set_auth_cookie(response: Response, token: str, max_age: int = _COOKIE_MAX_
     response.set_cookie(
         key="csrf_token",
         value=csrf_token,
-        httponly=False,           # Readable by frontend for Double-Submit CSRF protection
-        samesite=_COOKIE_SAMESITE,
-        secure=_COOKIE_SECURE,
+        httponly=False,
+        samesite=samesite,
+        secure=is_secure,
         max_age=max_age,
         path="/",
     )
     response.headers["X-CSRF-Token"] = csrf_token
 
 
-def _clear_auth_cookie(response: Response) -> None:
-    """Clear the session and CSRF cookies (expire immediately)."""
+def _clear_auth_cookie(response: Response, request: Optional[Request] = None) -> None:
+    """Clear session and CSRF cookies across all standard keys and variations."""
+    is_secure, samesite = _resolve_cookie_security(request)
     for key in ("__Host-auth_token", "auth_token", "csrf_token"):
         response.delete_cookie(
             key=key,
             path="/",
-            samesite=_COOKIE_SAMESITE,
-            secure=_COOKIE_SECURE,
+            samesite=samesite,
+            secure=is_secure,
         )
+        if samesite != "lax":
+            response.delete_cookie(key=key, path="/", samesite="lax", secure=is_secure)
 
 # ── Configuration: Specific Auth Errors vs Generic Message ─────────────────────
 # When True: distinct INVALID_EMAIL vs INVALID_PASSWORD errors.
@@ -265,9 +313,9 @@ def register_user(req: RegisterRequest, request: Request, response: Response):
         metadata={"role": user["role"]},
     )
 
-    _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT)
+    _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT, request=request)
     # In production, do not return session token in JSON response body (XSS mitigation)
-    resp_token = None if _ENV == "production" else token
+    resp_token = None if (_ENV == "production" or _IS_PROD_DEPLOY) else token
     return AuthResponse(
         token=resp_token,
         user=UserResponse(**user),
@@ -387,9 +435,9 @@ def login_user(req: LoginRequest, request: Request, response: Response):
     )
 
     max_age = _COOKIE_MAX_AGE_REMEMBER if req.remember_me else _COOKIE_MAX_AGE_DEFAULT
-    _set_auth_cookie(response, token, max_age=max_age)
+    _set_auth_cookie(response, token, max_age=max_age, request=request)
     # In production, do not return session token in JSON response body (XSS mitigation)
-    resp_token = None if _ENV == "production" else token
+    resp_token = None if (_ENV == "production" or _IS_PROD_DEPLOY) else token
     return AuthResponse(
         token=resp_token,
         user=UserResponse(**clean_user),
@@ -510,9 +558,9 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
         metadata={"portal": "admin_portal"},
     )
 
-    _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT)
+    _set_auth_cookie(response, token, max_age=_COOKIE_MAX_AGE_DEFAULT, request=request)
     # In production, do not return session token in JSON response body (XSS mitigation)
-    resp_token = None if _ENV == "production" else token
+    resp_token = None if (_ENV == "production" or _IS_PROD_DEPLOY) else token
     return AuthResponse(
         token=resp_token,
         user=UserResponse(**clean_user),
@@ -523,13 +571,14 @@ def admin_login(req: AdminLoginRequest, request: Request, response: Response):
 @router.get("/csrf")
 def get_csrf_token(request: Request, response: Response):
     """Return and set a fresh double-submit CSRF token."""
+    is_secure, samesite = _resolve_cookie_security(request)
     token = request.cookies.get("csrf_token") or secrets.token_urlsafe(24)
     response.set_cookie(
         key="csrf_token",
         value=token,
         httponly=False,
-        samesite=_COOKIE_SAMESITE,
-        secure=_COOKIE_SECURE,
+        samesite=samesite,
+        secure=is_secure,
         max_age=_COOKIE_MAX_AGE_DEFAULT,
         path="/",
     )
@@ -544,6 +593,7 @@ def get_current_user_profile(
     user: Dict[str, Any] = Depends(require_authenticated_user),
 ):
     """Fetch profile of the currently logged-in user and ensure valid CSRF token."""
+    is_secure, samesite = _resolve_cookie_security(request)
     token = request.cookies.get("csrf_token")
     if not token:
         token = secrets.token_urlsafe(24)
@@ -551,8 +601,8 @@ def get_current_user_profile(
             key="csrf_token",
             value=token,
             httponly=False,
-            samesite=_COOKIE_SAMESITE,
-            secure=_COOKIE_SECURE,
+            samesite=samesite,
+            secure=is_secure,
             max_age=_COOKIE_MAX_AGE_DEFAULT,
             path="/",
         )
@@ -711,7 +761,7 @@ def change_password(
 
     # 7. Create a brand new session for current device and attach cookie
     new_token = create_session(user["id"], expires_days=7)
-    _set_auth_cookie(response, new_token)
+    _set_auth_cookie(response, new_token, request=request)
 
     # 8. Activity log: mask email, NEVER log plain text passwords
     log_activity(
@@ -728,7 +778,7 @@ def change_password(
         metadata={"revoked_other_sessions": True},
     )
 
-    resp_token = None if _ENV == "production" else new_token
+    resp_token = None if (_ENV == "production" or _IS_PROD_DEPLOY) else new_token
     resp_content = {
         "message": "Password changed successfully. You've been signed out of all other devices.",
     }
@@ -756,7 +806,7 @@ def logout_user(
         revoke_session(token)
 
     # Clear the cookie on the client
-    _clear_auth_cookie(response)
+    _clear_auth_cookie(response, request=request)
 
     log_activity(
         user_id=user["id"],
