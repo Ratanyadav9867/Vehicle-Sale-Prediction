@@ -45,9 +45,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-# Healthcheck targeting the liveness endpoint
+# Healthcheck targeting the liveness endpoint with dynamic PORT support
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -f http://127.0.0.1:8000/healthz || exit 1
+    CMD sh -c "curl -f http://127.0.0.1:${PORT:-8000}/healthz || exit 1"
 
-# Launch with Gunicorn process manager running Uvicorn workers
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "30", "--graceful-timeout", "10", "--access-logfile", "-", "backend.main:app"]
+# Launch with Gunicorn process manager running Uvicorn workers on dynamic Railway PORT
+CMD ["sh", "-c", "exec gunicorn -w ${WEB_CONCURRENCY:-4} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --timeout 30 --graceful-timeout 10 --access-logfile - backend.main:app"]

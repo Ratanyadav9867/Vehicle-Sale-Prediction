@@ -7,6 +7,11 @@ uvicorn[standard]==0.52.3
 pydantic==2.13.4
 python-multipart>=0.0.9
 
+# Production Web Server & Database Drivers
+gunicorn>=22.0.0
+psycopg2-binary>=2.9.9
+redis>=5.0.0
+
 # ML inference
 scikit-learn==1.8.0
 joblib==1.5.3

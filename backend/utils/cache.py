@@ -17,7 +17,10 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Redis connection settings from environment
-REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "").strip() or None
+if not REDIS_URL and os.getenv("ENVIRONMENT", "development").strip().lower() != "production":
+    REDIS_URL = "redis://127.0.0.1:6379/0"
+
 CACHE_TTL_DEFAULT = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
 
 
@@ -74,18 +77,22 @@ _redis_client = None
 _in_memory_cache = InMemoryCache()
 _using_redis = False
 
-try:
-    import redis  # type: ignore
+if REDIS_URL:
+    try:
+        import redis  # type: ignore
 
-    _client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=1.5, socket_connect_timeout=1.5)
-    # Test connection
-    _client.ping()
-    _redis_client = _client
-    _using_redis = True
-    logger.info("Connected to Redis cache at %s", REDIS_URL)
-except Exception as e:
-    logger.info("Redis not available (%s); falling back to thread-safe in-memory cache.", e)
-    _using_redis = False
+        _client = redis.from_url(REDIS_URL, decode_responses=True, socket_timeout=1.5, socket_connect_timeout=1.5)
+        # Test connection
+        _client.ping()
+        _redis_client = _client
+        _using_redis = True
+        safe_url = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", REDIS_URL)
+        logger.info("Connected to Redis cache at %s", safe_url)
+    except Exception as e:
+        logger.info("Redis not available (%s); falling back to thread-safe in-memory cache.", e)
+        _using_redis = False
+else:
+    logger.info("REDIS_URL not configured; using thread-safe in-memory LRU cache.")
 
 
 def normalize_and_hash(params: Dict[str, Any]) -> str:

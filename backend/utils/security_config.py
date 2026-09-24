@@ -66,9 +66,13 @@ def validate_production_secrets() -> None:
     if admin_password and is_obviously_weak(admin_password):
         errors.append("ADMIN_PASSWORD contains an insecure default or placeholder value.")
 
-    # 3. DATABASE_URL check (reject fallback carpass or plain changeme)
+    # 3. DATABASE_URL check (Must be set and must be PostgreSQL in production)
     db_url = os.getenv("DATABASE_URL", "").strip()
-    if db_url and is_obviously_weak(db_url):
+    if not db_url:
+        errors.append("DATABASE_URL environment variable is missing in production. SQLite fallback is strictly prohibited in production.")
+    elif db_url.startswith("sqlite") or db_url.endswith(".db"):
+        errors.append("DATABASE_URL must be a PostgreSQL connection in production, not SQLite.")
+    elif is_obviously_weak(db_url):
         errors.append("DATABASE_URL contains an insecure default or placeholder password.")
 
     # 4. Insecure debug check

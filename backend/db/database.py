@@ -1,9 +1,18 @@
 """
 backend/db/database.py
 ======================
-Embedded SQLite database for User Authentication, Role Management, and
-Append-Only Activity Audit Logs.
-Uses Python's standard library sqlite3 with WAL mode for fast concurrency.
+Production-ready database abstraction supporting:
+  1. PostgreSQL for Production (Railway PostgreSQL, Docker, Kubernetes)
+  2. Embedded SQLite with WAL mode for Local Development and Testing
+
+Features:
+  - Idempotent table creation and administrator seeding
+  - Multi-worker concurrent startup safety (PostgreSQL transaction advisory locks,
+    SQLite file/in-process mutex synchronization, ON CONFLICT DO NOTHING)
+  - Connection pooling with thread-safe resource checkout and automatic cleanup
+  - Dynamic parameter translation (? -> %s) and transparent lastrowid support
+  - Strict data preservation (no dropping tables, no resetting production data)
+  - Append-only activity audit logging with credential scrubbing
 """
 
 import hashlib
@@ -13,9 +22,10 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from backend.utils.dotenv_loader import load_dotenv
 
@@ -27,20 +37,55 @@ DB_DIR = Path(__file__).parent.parent / "data"
 DB_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DB_DIR / "app.db"
 
-
-def _get_connection() -> sqlite3.Connection:
-    """Create a connection to SQLite with WAL mode, busy timeout, and row factory."""
-    conn = sqlite3.connect(str(DB_PATH), timeout=15.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute("PRAGMA busy_timeout=10000;")
-    return conn
+_init_lock = threading.Lock()
+_db_initialized = False
+_pg_pool = None
+_pool_lock = threading.Lock()
 
 
-get_connection = _get_connection
+# ── Database URL & Driver Selection ───────────────────────────────────────────
 
+def get_database_url() -> Optional[str]:
+    """Retrieve DATABASE_URL from environment with protocol normalization."""
+    raw_url = os.getenv("DATABASE_URL", "").strip()
+    if not raw_url:
+        return None
+    # Normalize postgres:// (standard on Railway/Heroku) to postgresql://
+    if raw_url.startswith("postgres://"):
+        raw_url = "postgresql://" + raw_url[len("postgres://"):]
+    return raw_url
+
+
+def get_database_type() -> str:
+    """
+    Determine whether the active database backend is 'postgres' or 'sqlite'.
+    Enforces strict production requirements: SQLite fallback is prohibited in production.
+    """
+    url = get_database_url()
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+
+    if url:
+        if url.startswith("postgresql://") or url.startswith("postgres://"):
+            return "postgres"
+        elif url.startswith("sqlite"):
+            if env == "production":
+                raise RuntimeError(
+                    "FATAL: DATABASE_URL must be a PostgreSQL connection in production, not SQLite."
+                )
+            return "sqlite"
+        else:
+            return "postgres"
+
+    if env == "production":
+        raise RuntimeError(
+            "FATAL: DATABASE_URL environment variable must be configured when ENVIRONMENT=production. "
+            "SQLite fallback is strictly prohibited in production."
+        )
+
+    return "sqlite"
+
+
+# ── Password Hashing & Constant-Time Verification ─────────────────────────────
 
 def hash_password(password: str, salt: Optional[str] = None) -> Tuple[str, str]:
     """Hash password using PBKDF2-HMAC-SHA256 with 100,000 iterations."""
@@ -62,7 +107,9 @@ def verify_password(password: str, stored_hash: str, salt: str) -> bool:
 
 
 # Precomputed constant dummy hash and salt for constant-time email mismatch verification
-DUMMY_PWD_HASH, DUMMY_SALT = hash_password("dummy_constant_for_timing_mitigation_12345", salt="0123456789abcdef0123456789abcdef")
+DUMMY_PWD_HASH, DUMMY_SALT = hash_password(
+    "dummy_constant_for_timing_mitigation_12345", salt="0123456789abcdef0123456789abcdef"
+)
 
 
 def verify_dummy_password(password: str) -> bool:
@@ -70,164 +117,493 @@ def verify_dummy_password(password: str) -> bool:
     return verify_password(password, DUMMY_PWD_HASH, DUMMY_SALT)
 
 
-def init_db() -> None:
-    """Initialize database tables and seed default administrator."""
-    with _get_connection() as conn:
-        cursor = conn.cursor()
+# ── PostgreSQL Connection Adapter & Query Translation ─────────────────────────
 
-        # Users table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL COLLATE NOCASE,
-                password_hash TEXT NOT NULL,
-                salt TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_login_at TEXT
-            );
-        """)
+def _adapt_sql_for_postgres(sql: str) -> Tuple[str, bool]:
+    """
+    Translate standard/SQLite-style parameterized queries into PostgreSQL syntax.
+    1. Replaces '?' placeholders with '%s'.
+    2. Converts 'LIKE' to 'ILIKE' for case-insensitive text matching.
+    3. Automatically appends 'RETURNING id' for INSERT statements on tables with auto-increment 'id'
+       so cursor.lastrowid is populated transparently.
+    """
+    adapted = sql
+    adapted = re.sub(r"\?", "%s", adapted)
+    adapted = re.sub(r"\bLIKE\b", "ILIKE", adapted)
 
-        # Sessions table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-        """)
+    has_returning = bool(re.search(r"\bRETURNING\b", adapted, re.IGNORECASE))
+    is_insert_with_id = bool(
+        re.search(
+            r"INSERT\s+INTO\s+(users|activity_logs|predictions|support_tickets)\b",
+            adapted,
+            re.IGNORECASE,
+        )
+    )
 
-        # Append-only Activity Logs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS activity_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                user_id INTEGER,
-                user_name TEXT NOT NULL,
-                email TEXT NOT NULL COLLATE NOCASE,
-                role TEXT NOT NULL,
-                action_type TEXT NOT NULL,
-                category TEXT NOT NULL,
-                description TEXT NOT NULL,
-                status TEXT NOT NULL,
-                ip_address TEXT NOT NULL,
-                user_agent TEXT NOT NULL,
-                metadata_json TEXT NOT NULL DEFAULT '{}'
-            );
-        """)
+    if is_insert_with_id and not has_returning:
+        stripped = adapted.strip().rstrip(";")
+        adapted = stripped + " RETURNING id;"
+        return adapted, True
 
-        # Predictions History table (authenticated user prediction persistence)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                user_name TEXT NOT NULL,
-                email TEXT NOT NULL COLLATE NOCASE,
-                brand TEXT NOT NULL,
-                year INTEGER NOT NULL,
-                present_price REAL NOT NULL,
-                kms_driven INTEGER NOT NULL,
-                fuel_type TEXT NOT NULL,
-                seller_type TEXT NOT NULL,
-                transmission TEXT NOT NULL,
-                owner INTEGER NOT NULL,
-                predicted_price REAL NOT NULL,
-                currency TEXT NOT NULL DEFAULT 'Lakh INR',
-                car_age INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-        """)
+    return adapted, False
 
-        # Support Tickets table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS support_tickets (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                name             TEXT NOT NULL,
-                email            TEXT NOT NULL COLLATE NOCASE,
-                subject          TEXT NOT NULL,
-                category         TEXT NOT NULL DEFAULT 'general',
-                message          TEXT NOT NULL,
-                attachment_path  TEXT,
-                attachment_name  TEXT,
-                status           TEXT NOT NULL DEFAULT 'open',
-                ip_address       TEXT NOT NULL DEFAULT '127.0.0.1',
-                created_at       TEXT NOT NULL,
-                updated_at       TEXT NOT NULL
-            );
-        """)
 
-        # Indices for rapid querying and filtering
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON activity_logs(timestamp);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_category ON activity_logs(category);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_user_id ON activity_logs(user_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_status ON activity_logs(status);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_action ON activity_logs(action_type);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_user_id ON predictions(user_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_created_at ON predictions(created_at);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status   ON support_tickets(status);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_email    ON support_tickets(email);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_created  ON support_tickets(created_at);")
+class PostgresCursorWrapper:
+    """Cursor wrapper for PostgreSQL providing unified lastrowid and query parameter translation."""
 
-        conn.commit()
+    def __init__(self, raw_cursor):
+        self._cursor = raw_cursor
+        self.lastrowid: Optional[int] = None
 
-        # Seed initial administrator if no admin account exists yet
-        cursor.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1;")
-        admin_exists = cursor.fetchone()
-        if not admin_exists:
-            env = os.getenv("ENVIRONMENT", "development").strip().lower()
-            admin_email = os.getenv("ADMIN_EMAIL", "").strip()
-            admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
-            admin_name = os.getenv("ADMIN_NAME", "Administrator").strip()
+    def execute(self, sql: str, params: Optional[Union[Sequence[Any], Tuple[Any, ...]]] = None):
+        adapted_sql, expects_returning = _adapt_sql_for_postgres(sql)
+        if params is not None:
+            self._cursor.execute(adapted_sql, tuple(params))
+        else:
+            self._cursor.execute(adapted_sql)
 
-            if not admin_email or not admin_password:
-                if env == "production":
+        if expects_returning:
+            try:
+                res = self._cursor.fetchone()
+                if res is not None:
+                    self.lastrowid = res[0]
+                else:
+                    self.lastrowid = None
+            except Exception:
+                self.lastrowid = None
+        return self
+
+    def executemany(self, sql: str, seq_of_params: Sequence[Sequence[Any]]):
+        adapted_sql, _ = _adapt_sql_for_postgres(sql)
+        return self._cursor.executemany(adapted_sql, [tuple(p) for p in seq_of_params])
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def fetchmany(self, size=None):
+        return self._cursor.fetchmany(size) if size is not None else self._cursor.fetchmany()
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def close(self):
+        try:
+            self._cursor.close()
+        except Exception:
+            pass
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+
+class PostgresConnectionWrapper:
+    """Thread-safe connection wrapper that manages transactions and returns connections to the pool."""
+
+    def __init__(self, raw_conn, pool=None):
+        self._conn = raw_conn
+        self._pool = pool
+        self._closed = False
+
+    def cursor(self):
+        import psycopg2.extras
+        raw_cur = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        return PostgresCursorWrapper(raw_cur)
+
+    def execute(self, sql: str, params: Optional[Union[Sequence[Any], Tuple[Any, ...]]] = None):
+        cur = self.cursor()
+        cur.execute(sql, params)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            if self._pool is not None:
+                self._pool.putconn(self._conn)
+            else:
+                self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is not None:
+                self.rollback()
+            else:
+                self.commit()
+        finally:
+            self.close()
+
+
+def _get_pg_pool():
+    """Lazily initialize ThreadedConnectionPool for PostgreSQL."""
+    global _pg_pool
+    if _pg_pool is None:
+        with _pool_lock:
+            if _pg_pool is None:
+                try:
+                    import psycopg2
+                    import psycopg2.pool
+                    import psycopg2.extras
+                except ImportError as exc:
                     raise RuntimeError(
-                        "FATAL: ADMIN_EMAIL and ADMIN_PASSWORD environment variables MUST be set "
-                        "when ENVIRONMENT=production to seed the initial administrator."
+                        "psycopg2 is required for PostgreSQL connections. "
+                        "Install it with: pip install psycopg2-binary"
+                    ) from exc
+
+                db_url = get_database_url()
+                min_conn = int(os.getenv("DB_POOL_MIN", "1"))
+                max_conn = int(os.getenv("DB_POOL_MAX", "10"))
+                safe_url = sanitize_log_text(db_url or "")
+                logger.info("Initializing PostgreSQL pool (min=%d, max=%d) at %s", min_conn, max_conn, safe_url)
+                _pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                    min_conn, max_conn, dsn=db_url
+                )
+    return _pg_pool
+
+
+def close_db_pools():
+    """Close all connections in the PostgreSQL connection pool upon process termination."""
+    global _pg_pool
+    with _pool_lock:
+        if _pg_pool is not None:
+            try:
+                _pg_pool.closeall()
+                logger.info("Closed PostgreSQL connection pool.")
+            except Exception as e:
+                logger.warning("Error closing PostgreSQL pool: %s", e)
+            _pg_pool = None
+
+
+# ── SQLite Connection Wrapper ─────────────────────────────────────────────────
+
+class SQLiteConnectionWrapper:
+    """Wrapper around sqlite3.Connection ensuring uniform context management semantics."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def execute(self, sql: str, params: Optional[Union[Sequence[Any], Tuple[Any, ...]]] = None):
+        if params is not None:
+            return self._conn.execute(sql, params)
+        return self._conn.execute(sql)
+
+    def executemany(self, sql: str, seq_of_params: Sequence[Sequence[Any]]):
+        return self._conn.executemany(sql, seq_of_params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is not None:
+                self.rollback()
+            else:
+                self.commit()
+        finally:
+            self.close()
+
+
+def _get_sqlite_connection() -> SQLiteConnectionWrapper:
+    """Create a connection to SQLite with WAL mode, busy timeout, and row factory."""
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    return SQLiteConnectionWrapper(conn)
+
+
+def _get_connection():
+    """Retrieve an active database connection context for either PostgreSQL or SQLite."""
+    db_type = get_database_type()
+    if db_type == "postgres":
+        pool = _get_pg_pool()
+        raw_conn = pool.getconn()
+        return PostgresConnectionWrapper(raw_conn, pool=pool)
+    return _get_sqlite_connection()
+
+
+get_connection = _get_connection
+
+
+# ── Database Initialization & Idempotent Schema Creation ──────────────────────
+
+def init_db() -> None:
+    """
+    Initialize database tables and seed default administrator idempotently.
+    Safe for multi-worker Gunicorn/Uvicorn concurrent startup.
+    Uses PostgreSQL advisory locks or SQLite thread/file synchronization.
+    Guarantees no UNIQUE constraint crashes or duplicate rows.
+    """
+    global _db_initialized
+    with _init_lock:
+        db_type = get_database_type()
+
+        with _get_connection() as conn:
+            cursor = conn.cursor()
+
+            if db_type == "postgres":
+                # PostgreSQL transaction-level advisory lock (64-bit identifier)
+                # Sibling Gunicorn workers executing init_db concurrently wait here
+                # until this transaction commits.
+                cursor.execute("SELECT pg_advisory_xact_lock(7483921);")
+
+                # PostgreSQL DDL
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL,
+                        email VARCHAR(255) UNIQUE NOT NULL,
+                        password_hash VARCHAR(255) NOT NULL,
+                        salt VARCHAR(255) NOT NULL,
+                        role VARCHAR(50) NOT NULL DEFAULT 'user',
+                        status VARCHAR(50) NOT NULL DEFAULT 'active',
+                        created_at VARCHAR(100) NOT NULL,
+                        updated_at VARCHAR(100) NOT NULL,
+                        last_login_at VARCHAR(100)
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        token VARCHAR(255) PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        created_at VARCHAR(100) NOT NULL,
+                        expires_at VARCHAR(100) NOT NULL
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS activity_logs (
+                        id SERIAL PRIMARY KEY,
+                        timestamp VARCHAR(100) NOT NULL,
+                        user_id INTEGER,
+                        user_name VARCHAR(255) NOT NULL,
+                        email VARCHAR(255) NOT NULL,
+                        role VARCHAR(50) NOT NULL,
+                        action_type VARCHAR(100) NOT NULL,
+                        category VARCHAR(100) NOT NULL,
+                        description TEXT NOT NULL,
+                        status VARCHAR(50) NOT NULL,
+                        ip_address VARCHAR(100) NOT NULL,
+                        user_agent TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        user_name VARCHAR(255) NOT NULL,
+                        email VARCHAR(255) NOT NULL,
+                        brand VARCHAR(100) NOT NULL,
+                        year INTEGER NOT NULL,
+                        present_price DOUBLE PRECISION NOT NULL,
+                        kms_driven INTEGER NOT NULL,
+                        fuel_type VARCHAR(50) NOT NULL,
+                        seller_type VARCHAR(50) NOT NULL,
+                        transmission VARCHAR(50) NOT NULL,
+                        owner INTEGER NOT NULL,
+                        predicted_price DOUBLE PRECISION NOT NULL,
+                        currency VARCHAR(50) NOT NULL DEFAULT 'Lakh INR',
+                        car_age INTEGER NOT NULL,
+                        created_at VARCHAR(100) NOT NULL
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS support_tickets (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL,
+                        email VARCHAR(255) NOT NULL,
+                        subject VARCHAR(255) NOT NULL,
+                        category VARCHAR(100) NOT NULL DEFAULT 'general',
+                        message TEXT NOT NULL,
+                        attachment_path TEXT,
+                        attachment_name VARCHAR(255),
+                        status VARCHAR(50) NOT NULL DEFAULT 'open',
+                        ip_address VARCHAR(100) NOT NULL DEFAULT '127.0.0.1',
+                        created_at VARCHAR(100) NOT NULL,
+                        updated_at VARCHAR(100) NOT NULL
+                    );
+                """)
+            else:
+                # SQLite DDL
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        email TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                        password_hash TEXT NOT NULL,
+                        salt TEXT NOT NULL,
+                        role TEXT NOT NULL DEFAULT 'user',
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        last_login_at TEXT
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        token TEXT PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS activity_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        user_id INTEGER,
+                        user_name TEXT NOT NULL,
+                        email TEXT NOT NULL COLLATE NOCASE,
+                        role TEXT NOT NULL,
+                        action_type TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        ip_address TEXT NOT NULL,
+                        user_agent TEXT NOT NULL,
+                        metadata_json TEXT NOT NULL DEFAULT '{}'
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS predictions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        user_name TEXT NOT NULL,
+                        email TEXT NOT NULL COLLATE NOCASE,
+                        brand TEXT NOT NULL,
+                        year INTEGER NOT NULL,
+                        present_price REAL NOT NULL,
+                        kms_driven INTEGER NOT NULL,
+                        fuel_type TEXT NOT NULL,
+                        seller_type TEXT NOT NULL,
+                        transmission TEXT NOT NULL,
+                        owner INTEGER NOT NULL,
+                        predicted_price REAL NOT NULL,
+                        currency TEXT NOT NULL DEFAULT 'Lakh INR',
+                        car_age INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    );
+                """)
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS support_tickets (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        email TEXT NOT NULL COLLATE NOCASE,
+                        subject TEXT NOT NULL,
+                        category TEXT NOT NULL DEFAULT 'general',
+                        message TEXT NOT NULL,
+                        attachment_path TEXT,
+                        attachment_name TEXT,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        ip_address TEXT NOT NULL DEFAULT '127.0.0.1',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
+                """)
+
+            # Unified Index Declarations
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON activity_logs(timestamp);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_category ON activity_logs(category);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_user_id ON activity_logs(user_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_status ON activity_logs(status);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_action ON activity_logs(action_type);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_user_id ON predictions(user_id);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_predictions_created_at ON predictions(created_at);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_status   ON support_tickets(status);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_email    ON support_tickets(email);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tickets_created  ON support_tickets(created_at);")
+
+            # Seed initial administrator idempotently
+            cursor.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1;")
+            admin_exists = cursor.fetchone()
+
+            if not admin_exists:
+                env = os.getenv("ENVIRONMENT", "development").strip().lower()
+                admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+                admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+                admin_name = os.getenv("ADMIN_NAME", "Administrator").strip()
+
+                if not admin_email or not admin_password:
+                    if env == "production":
+                        raise RuntimeError(
+                            "FATAL: ADMIN_EMAIL and ADMIN_PASSWORD environment variables MUST be set "
+                            "when ENVIRONMENT=production to seed the initial administrator."
+                        )
+                    admin_email = admin_email or "dev-admin@localhost"
+                    admin_password = admin_password or secrets.token_urlsafe(16)
+                    print(
+                        f"\n[SECURITY NOTICE] No admin credentials found in environment.\n"
+                        f"Created temporary development admin:\n"
+                        f"  Email:    {admin_email}\n"
+                        f"  Password: {admin_password}\n"
                     )
-                admin_email = admin_email or "dev-admin@localhost"
-                admin_password = admin_password or secrets.token_urlsafe(16)
-                print(
-                    f"\n[SECURITY NOTICE] No admin credentials found in environment.\n"
-                    f"Created temporary development admin:\n"
-                    f"  Email:    {admin_email}\n"
-                    f"  Password: {admin_password}\n"
-                )
-                logger.warning(
-                    "Seeded development admin: %s (generated temporary password)", admin_email
-                )
+                    logger.warning(
+                        "Seeded development admin: %s (generated temporary password)", admin_email
+                    )
 
-            now_iso = datetime.now(timezone.utc).isoformat()
-            p_hash, salt = hash_password(admin_password)
-            cursor.execute("""
-                INSERT INTO users (name, email, password_hash, salt, role, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'admin', 'active', ?, ?);
-            """, (admin_name, admin_email.lower(), p_hash, salt, now_iso, now_iso))
-            admin_id = cursor.lastrowid
+                now_iso = datetime.now(timezone.utc).isoformat()
+                p_hash, salt = hash_password(admin_password)
+
+                try:
+                    # Idempotent upsert logic with ON CONFLICT DO NOTHING
+                    cursor.execute("""
+                        INSERT INTO users (name, email, password_hash, salt, role, status, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 'admin', 'active', ?, ?)
+                        ON CONFLICT (email) DO NOTHING;
+                    """, (admin_name, admin_email.lower(), p_hash, salt, now_iso, now_iso))
+
+                    admin_id = cursor.lastrowid
+                    if cursor.rowcount > 0 and admin_id:
+                        logger.info("Seeded initial administrator account (id=%s): %s", admin_id, admin_email)
+                except Exception as e:
+                    # In case of concurrent insert race condition, ignore unique violation gracefully
+                    if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                        logger.info("Admin account already initialized concurrently by sibling worker.")
+                    else:
+                        raise
+
             conn.commit()
-            logger.info("Seeded initial administrator account (id=%d): %s", admin_id, admin_email)
-
-            # Log system seed event
-            log_activity(
-                user_id=admin_id,
-                user_name=admin_name,
-                email=admin_email.lower(),
-                role="admin",
-                action_type="system_init",
-                category="system",
-                description="Database initialized and administrator account seeded",
-                status="success",
-                ip_address="127.0.0.1",
-                user_agent="System Initializer",
-                metadata={"default_email": admin_email.lower()}
-            )
+            _db_initialized = True
 
 
 # ── Activity Logging Engine ───────────────────────────────────────────────────
@@ -239,7 +615,11 @@ def sanitize_log_text(text: str) -> str:
     # Scrub database connection URLs with embedded credentials
     scrubbed = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", text)
     # Scrub key-value pairs like password=xyz or secret=xyz
-    scrubbed = re.sub(r"(?i)\b(password|pwd|secret|token|api[_-]?key)\s*[:=]\s*([^\s,;\"'}{]+)", r"\1=[REDACTED]", scrubbed)
+    scrubbed = re.sub(
+        r"(?i)\b(password|pwd|secret|token|api[_-]?key)\s*[:=]\s*([^\s,;\"'}{]+)",
+        r"\1=[REDACTED]",
+        scrubbed,
+    )
     # Scrub bearer tokens
     scrubbed = re.sub(r"(?i)bearer\s+[a-zA-Z0-9_\-\.]{15,}", "Bearer [REDACTED]", scrubbed)
     return scrubbed
@@ -266,14 +646,15 @@ def log_activity(
     meta_copy = dict(metadata or {})
 
     # Never log credentials or tokens
-    for forbidden in ["password", "token", "confirm_password", "salt", "secret", "current_password", "new_password"]:
+    for forbidden in [
+        "password", "token", "confirm_password", "salt", "secret", "current_password", "new_password"
+    ]:
         if forbidden in meta_copy:
             meta_copy[forbidden] = "[REDACTED]"
 
     clean_desc = sanitize_log_text(description)
     meta_str = sanitize_log_text(json.dumps(meta_copy))
 
-    # Guard against None violating NOT NULL column constraints
     safe_user_name = user_name or "Guest"
     safe_email = email or "anonymous"
     safe_role = role or "guest"
@@ -352,7 +733,7 @@ def create_user(name: str, email: str, password: str, role: str = "user") -> Dic
 
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM users WHERE email = ?;", (norm_email,))
+        cursor.execute("SELECT id FROM users WHERE LOWER(email) = ?;", (norm_email,))
         if cursor.fetchone():
             raise ValueError(f"An account with email '{norm_email}' already exists.")
 
@@ -363,8 +744,10 @@ def create_user(name: str, email: str, password: str, role: str = "user") -> Dic
             """, (name.strip(), norm_email, pwd_hash, salt, role, now_iso, now_iso))
             conn.commit()
             user_id = cursor.lastrowid
-        except sqlite3.IntegrityError:
-            raise ValueError(f"An account with email '{norm_email}' already exists.")
+        except Exception as e:
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower() or "integrity" in str(e).lower():
+                raise ValueError(f"An account with email '{norm_email}' already exists.")
+            raise
 
     return get_user_by_id(user_id) or {}
 
@@ -373,7 +756,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     """Fetch user by email (case-insensitive)."""
     with _get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE email = ?;", (email.strip().lower(),))
+        cursor.execute("SELECT * FROM users WHERE LOWER(email) = ?;", (email.strip().lower(),))
         row = cursor.fetchone()
         return dict(row) if row else None
 
@@ -411,8 +794,8 @@ def hash_token(token: str) -> str:
 
 
 def create_session(user_id: int, expires_days: int = 7) -> str:
-    """Create a persistent session token.
-
+    """
+    Create a persistent session token.
     Stores the SHA-256 hash of the token in the database to prevent token leakage
     if the database is ever compromised, while returning the raw token to the caller.
     """
@@ -523,7 +906,7 @@ def list_users(
         query += " AND status = ?"
         params.append(status)
 
-    count_query = f"SELECT COUNT(*) FROM ({query})"
+    count_query = f"SELECT COUNT(*) FROM ({query}) AS subq"
 
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -593,9 +976,7 @@ def get_logs(
     sort_by: str = "timestamp",
     sort_order: str = "desc",
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """
-    Search, filter, and paginate audit logs.
-    """
+    """Search, filter, and paginate audit logs."""
     valid_sorts = {"id", "timestamp", "user_name", "email", "action_type", "category", "status"}
     if sort_by not in valid_sorts:
         sort_by = "timestamp"
@@ -634,7 +1015,7 @@ def get_logs(
         query += " AND timestamp <= ?"
         params.append(end_date)
 
-    count_query = f"SELECT COUNT(*) FROM ({query})"
+    count_query = f"SELECT COUNT(*) FROM ({query}) AS subq"
 
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -726,13 +1107,13 @@ def get_admin_dashboard_stats() -> Dict[str, Any]:
             FROM activity_logs
             WHERE action_type = 'login_failure'
             GROUP BY ip_address
-            HAVING fail_count >= 3
+            HAVING COUNT(*) >= 3
             ORDER BY fail_count DESC
             LIMIT 5;
         """)
         suspicious_ips = [dict(r) for r in cursor.fetchall()]
 
-        # Top 5 recent activities
+        # Top 6 recent activities
         cursor.execute("""
             SELECT id, timestamp, user_name, email, action_type, category, description, status, ip_address
             FROM activity_logs
@@ -864,7 +1245,7 @@ def create_ticket(
             attachment_path, attachment_name, ip_address, now_iso, now_iso,
         ))
         conn.commit()
-        return cursor.lastrowid
+        return cursor.lastrowid or 0
 
 
 def get_tickets(

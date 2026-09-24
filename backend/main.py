@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from backend.db.database import (
+    close_db_pools,
     get_all_predictions,
     get_connection,
     get_user_predictions,
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
         logger.error("Model failed to load: %s", model_store.load_error)
     yield
     logger.info("=== API shutting down ===")
+    close_db_pools()
 
 
 # ── App Configuration ─────────────────────────────────────────────────────────
@@ -668,3 +670,10 @@ def get_admin_predictions(
 @app.get("/", include_in_schema=False)
 def root():
     return {"message": "Vehicle Sales Prediction API", "docs": "/docs"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(_os.getenv("PORT", "8000"))
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, reload=False)
+
