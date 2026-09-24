@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, NavLink, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { InstallAppButton } from '../common/InstallAppButton';
 
 interface NavItem {
   to: string;
@@ -591,7 +592,20 @@ export default function Navbar() {
                   </div>
                 )}
 
-                {/* 4. Visitor Quick Portals */}
+                {/* 4. Application Installation (Authenticated Users & Admins) */}
+                {isAuthenticated && (
+                  <div className="pt-2 border-t border-white/10">
+                    <p className="px-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                      Application
+                    </p>
+                    <InstallAppButton
+                      variant="drawer"
+                      onInstalledClick={() => setDrawerOpen(false)}
+                    />
+                  </div>
+                )}
+
+                {/* 5. Visitor Quick Portals */}
                 {!isAuthenticated && (
                   <div className="pt-2 border-t border-white/10">
                     <p className="px-3 text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">

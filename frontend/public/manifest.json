@@ -1,0 +1,37 @@
+{
+  "id": "/",
+  "name": "Car Worth",
+  "short_name": "CarWorth",
+  "description": "Know what your car is worth: smart, data-driven price predictions in seconds.",
+  "theme_color": "#030407",
+  "background_color": "#030407",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "start_url": "/",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": [
+    "automotive",
+    "utilities",
+    "productivity"
+  ]
+}

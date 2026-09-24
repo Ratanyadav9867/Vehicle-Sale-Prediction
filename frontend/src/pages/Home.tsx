@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { GuestOnly } from '../components/auth/GuestOnly';
+import { InstallAppButton } from '../components/common/InstallAppButton';
 
 // Lazy-loaded 3D Showroom Showcase
 const ShowroomShowcase = lazy(() => import('../components/three/ShowroomShowcase'));
@@ -166,6 +167,7 @@ export default function Home() {
               >
                 Create a free account
               </Link>
+              <InstallAppButton variant="hero" />
             </motion.div>
           </GuestOnly>
 
